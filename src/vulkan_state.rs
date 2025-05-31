@@ -1,16 +1,17 @@
 use crate::debug;
 use ash::ext::debug_utils;
-use ash::{vk, Device, Instance};
+use ash::vk;
+use ash::{Device, Instance};
 use raw_window_handle::RawDisplayHandle;
-use std::ffi::{c_char, CStr};
-use ash::vk::PhysicalDevice;
+use std::ffi::{CStr, c_char};
 
 pub struct VulkanState {
     _entry: ash::Entry,
     debug_utils_instance_messenger: Option<(debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
     instance: Instance,
-    _adapter: PhysicalDevice,
+    _adapter: vk::PhysicalDevice,
     device: Device,
+    _queue: vk::Queue,
 }
 
 impl VulkanState {
@@ -29,14 +30,15 @@ impl VulkanState {
             debug::setup_debug_messenger(&entry, &instance, &debug_utils_messenger_create_info);
 
         let adapter = Self::pick_adapter(&instance);
-        let device = Self::create_device(&instance, adapter);
-
+        let (device, queue) = Self::create_device(&instance, adapter);
+        
         Self {
             _entry: entry,
             debug_utils_instance_messenger,
             instance,
             _adapter: adapter,
             device,
+            _queue: queue,
         }
     }
 
@@ -75,7 +77,7 @@ impl VulkanState {
                 .expect("Failed to create VkInstance")
         }
     }
-    
+
     fn check_validation_layer_support(entry: &ash::Entry) -> bool {
         let available_layers = unsafe {
             entry
@@ -110,7 +112,7 @@ impl VulkanState {
         extensions
     }
 
-    fn pick_adapter(instance: &Instance) -> PhysicalDevice {
+    fn pick_adapter(instance: &Instance) -> vk::PhysicalDevice {
         let adapters = unsafe {
             instance
                 .enumerate_physical_devices()
@@ -128,26 +130,34 @@ impl VulkanState {
         panic!("Failed to find a suitable GPU");
     }
 
-    fn is_adapter_suitable(instance: &Instance, adapter: PhysicalDevice) -> bool {
+    fn is_adapter_suitable(instance: &Instance, adapter: vk::PhysicalDevice) -> bool {
         let indices = QueueFamilyIndices::find_queue_families(instance, adapter);
         indices.is_complete()
     }
 
-    fn create_device(instance: &Instance, adapter: PhysicalDevice) -> Device {
+    fn create_device(instance: &Instance, adapter: vk::PhysicalDevice) -> (Device, vk::Queue) {
         let indices = QueueFamilyIndices::find_queue_families(instance, adapter);
 
         let queue_priority = 1.0f32;
         let queue_priorities = [queue_priority];
-        
+
         let queue_create_info = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(indices.graphics_family.unwrap())
             .queue_priorities(&queue_priorities);
         let queue_create_infos = [queue_create_info];
-        
-        let device_create_info = vk::DeviceCreateInfo::default()
-            .queue_create_infos(&queue_create_infos);
 
-        unsafe { instance.create_device(adapter, &device_create_info, None).expect("Failed to create device") }
+        let device_create_info =
+            vk::DeviceCreateInfo::default().queue_create_infos(&queue_create_infos);
+
+        let device = unsafe {
+            instance
+                .create_device(adapter, &device_create_info, None)
+                .expect("Failed to create device")
+        };
+
+        let queue = unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
+
+        (device, queue)
     }
 }
 
@@ -156,7 +166,7 @@ struct QueueFamilyIndices {
 }
 
 impl QueueFamilyIndices {
-    fn find_queue_families(instance: &Instance, adapter: PhysicalDevice) -> Self {
+    fn find_queue_families(instance: &Instance, adapter: vk::PhysicalDevice) -> Self {
         let mut indices = Self {
             graphics_family: None,
         };

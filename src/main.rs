@@ -1,5 +1,5 @@
-mod vulkan_state;
 mod debug;
+mod vulkan_state;
 
 use crate::vulkan_state::VulkanState;
 use raw_window_handle::HasDisplayHandle;
