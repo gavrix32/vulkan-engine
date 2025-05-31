@@ -1,4 +1,4 @@
-use std::ffi::{c_void, CStr};
+use std::ffi::{c_char, c_void, CStr, CString};
 use ash::{vk, Instance};
 use ash::ext::debug_utils;
 
@@ -55,4 +55,13 @@ unsafe extern "system" fn debug_callback(
         _ => log::error!("{:?} - {:?}", message_type, message),
     }
     vk::FALSE
+}
+
+pub fn get_validation_layer_cstring_pointers() -> (Vec<CString>, Vec<*const c_char>) {
+    let layers_cstring: Vec<CString> = VALIDATION_LAYERS
+        .iter()
+        .map(|&s| CString::new(s).unwrap())
+        .collect();
+    let pointers: Vec<*const c_char> = layers_cstring.iter().map(|s| s.as_ptr()).collect();
+    (layers_cstring, pointers)
 }
