@@ -2,7 +2,7 @@ mod debug;
 mod vulkan_state;
 
 use crate::vulkan_state::VulkanState;
-use raw_window_handle::HasDisplayHandle;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::time::Duration;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -25,9 +25,10 @@ impl ApplicationHandler for App {
 
         let window = event_loop.create_window(window_attribs).unwrap();
         let raw_display_handle = window.display_handle().unwrap().as_raw();
+        let raw_window_handle = window.window_handle().unwrap().as_raw();
 
         self.window = Some(window);
-        self.state = Some(VulkanState::new(raw_display_handle));
+        self.state = Some(VulkanState::new(raw_display_handle, raw_window_handle));
     }
 
     fn window_event(

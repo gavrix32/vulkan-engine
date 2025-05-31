@@ -1,21 +1,23 @@
 use crate::debug;
 use ash::ext::debug_utils;
+use ash::khr;
 use ash::vk;
-use ash::{Device, Instance};
-use raw_window_handle::RawDisplayHandle;
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::ffi::{CStr, c_char};
 
 pub struct VulkanState {
     _entry: ash::Entry,
+    instance: ash::Instance,
     debug_utils_instance_messenger: Option<(debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
-    instance: Instance,
+    surface: khr::surface::Instance,
+    surface_khr: vk::SurfaceKHR,
     _adapter: vk::PhysicalDevice,
-    device: Device,
+    device: ash::Device,
     _queue: vk::Queue,
 }
 
 impl VulkanState {
-    pub fn new(display_handle: RawDisplayHandle) -> Self {
+    pub fn new(display_handle: RawDisplayHandle, window_handle: RawWindowHandle) -> Self {
         let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan library") };
 
         let mut debug_utils_messenger_create_info = debug::create_debug_messenger_create_info();
@@ -29,13 +31,19 @@ impl VulkanState {
         let debug_utils_instance_messenger =
             debug::setup_debug_messenger(&entry, &instance, &debug_utils_messenger_create_info);
 
+        // surface
+        let (surface, surface_khr) =
+            Self::create_surface(&entry, &instance, display_handle, window_handle);
+
         let adapter = Self::pick_adapter(&instance);
         let (device, queue) = Self::create_device(&instance, adapter);
-        
+
         Self {
             _entry: entry,
-            debug_utils_instance_messenger,
             instance,
+            debug_utils_instance_messenger,
+            surface,
+            surface_khr,
             _adapter: adapter,
             device,
             _queue: queue,
@@ -46,7 +54,7 @@ impl VulkanState {
         entry: &ash::Entry,
         display_handle: RawDisplayHandle,
         debug_create_info: &mut vk::DebugUtilsMessengerCreateInfoEXT<'static>,
-    ) -> Instance {
+    ) -> ash::Instance {
         let app_info = vk::ApplicationInfo::default()
             .application_name(c"Hello Triangle")
             .application_version(0)
@@ -112,7 +120,21 @@ impl VulkanState {
         extensions
     }
 
-    fn pick_adapter(instance: &Instance) -> vk::PhysicalDevice {
+    fn create_surface(
+        entry: &ash::Entry,
+        instance: &ash::Instance,
+        display_handle: RawDisplayHandle,
+        window_handle: RawWindowHandle,
+    ) -> (khr::surface::Instance, vk::SurfaceKHR) {
+        let surface = khr::surface::Instance::new(&entry, &instance);
+        let surface_khr = unsafe {
+            ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
+                .expect("Failed to create window surface")
+        };
+        (surface, surface_khr)
+    }
+
+    fn pick_adapter(instance: &ash::Instance) -> vk::PhysicalDevice {
         let adapters = unsafe {
             instance
                 .enumerate_physical_devices()
@@ -130,12 +152,15 @@ impl VulkanState {
         panic!("Failed to find a suitable GPU");
     }
 
-    fn is_adapter_suitable(instance: &Instance, adapter: vk::PhysicalDevice) -> bool {
+    fn is_adapter_suitable(instance: &ash::Instance, adapter: vk::PhysicalDevice) -> bool {
         let indices = QueueFamilyIndices::find_queue_families(instance, adapter);
         indices.is_complete()
     }
 
-    fn create_device(instance: &Instance, adapter: vk::PhysicalDevice) -> (Device, vk::Queue) {
+    fn create_device(
+        instance: &ash::Instance,
+        adapter: vk::PhysicalDevice,
+    ) -> (ash::Device, vk::Queue) {
         let indices = QueueFamilyIndices::find_queue_families(instance, adapter);
 
         let queue_priority = 1.0f32;
@@ -166,7 +191,7 @@ struct QueueFamilyIndices {
 }
 
 impl QueueFamilyIndices {
-    fn find_queue_families(instance: &Instance, adapter: vk::PhysicalDevice) -> Self {
+    fn find_queue_families(instance: &ash::Instance, adapter: vk::PhysicalDevice) -> Self {
         let mut indices = Self {
             graphics_family: None,
         };
@@ -202,6 +227,7 @@ impl Drop for VulkanState {
             if let Some((instance, messenger)) = self.debug_utils_instance_messenger.take() {
                 instance.destroy_debug_utils_messenger(messenger, None);
             }
+            self.surface.destroy_surface(self.surface_khr, None);
             self.instance.destroy_instance(None)
         };
     }
