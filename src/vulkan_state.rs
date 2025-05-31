@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::debug;
 use ash::ext;
 use ash::khr;
@@ -14,7 +15,8 @@ pub struct VulkanState {
     surface_khr: vk::SurfaceKHR,
     _adapter: vk::PhysicalDevice,
     device: ash::Device,
-    _queue: vk::Queue,
+    _graphics_queue: vk::Queue,
+    _present_queue: vk::Queue,
 }
 
 impl VulkanState {
@@ -36,7 +38,7 @@ impl VulkanState {
             Self::create_surface(&entry, &instance, display_handle, window_handle);
 
         let adapter = Self::pick_adapter(&instance, &surface, surface_khr);
-        let (device, queue) = Self::create_device(&instance, adapter, &surface, surface_khr);
+        let (device, graphics_queue, present_queue) = Self::create_device(&instance, adapter, &surface, surface_khr);
 
         Self {
             _entry: entry,
@@ -46,7 +48,8 @@ impl VulkanState {
             surface_khr,
             _adapter: adapter,
             device,
-            _queue: queue,
+            _graphics_queue: graphics_queue,
+            _present_queue: present_queue,
         }
     }
 
@@ -172,18 +175,26 @@ impl VulkanState {
         adapter: vk::PhysicalDevice,
         surface: &khr::surface::Instance,
         surface_khr: vk::SurfaceKHR,
-    ) -> (ash::Device, vk::Queue) {
+    ) -> (ash::Device, vk::Queue, vk::Queue) {
         let indices =
             QueueFamilyIndices::find_queue_families(instance, adapter, surface, surface_khr);
 
         let queue_priority = 1.0f32;
         let queue_priorities = [queue_priority];
 
-        let queue_create_info = vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(indices.graphics_family.unwrap())
-            .queue_priorities(&queue_priorities);
-        let queue_create_infos = [queue_create_info];
+        let mut unique_queue_families = HashSet::new();
+        unique_queue_families.insert(indices.graphics_family.unwrap());
+        unique_queue_families.insert(indices.present_family.unwrap());
 
+        let mut queue_create_infos = Vec::new();
+        
+        for queue_family in unique_queue_families {
+            let queue_create_info = vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(queue_family)
+                .queue_priorities(&queue_priorities);
+            queue_create_infos.push(queue_create_info);
+        }
+        
         let device_create_info =
             vk::DeviceCreateInfo::default().queue_create_infos(&queue_create_infos);
 
@@ -193,9 +204,10 @@ impl VulkanState {
                 .expect("Failed to create device")
         };
 
-        let queue = unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
+        let graphics_queue = unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
+        let present_queue = unsafe { device.get_device_queue(indices.present_family.unwrap(), 0) };
 
-        (device, queue)
+        (device, graphics_queue, present_queue)
     }
 }
 
