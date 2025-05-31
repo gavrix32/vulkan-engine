@@ -8,26 +8,31 @@ pub struct VulkanState {
     _entry: ash::Entry,
     debug_utils_instance_messenger: Option<(debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
     instance: Instance,
+    adapter: vk::PhysicalDevice,
 }
 
 impl VulkanState {
     pub fn new(display_handle: RawDisplayHandle) -> Self {
         let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan library") };
-
+        
         let mut debug_utils_messenger_create_info = debug::create_debug_messenger_create_info();
-
+        
         let instance = Self::create_instance(
             &entry,
             display_handle,
             &mut debug_utils_messenger_create_info,
         );
+        
         let debug_utils_instance_messenger =
             debug::setup_debug_messenger(&entry, &instance, &debug_utils_messenger_create_info);
+        
+        let adapter = Self::pick_adapter(&instance);
 
         Self {
             _entry: entry,
             debug_utils_instance_messenger,
             instance,
+            adapter,
         }
     }
 
@@ -103,6 +108,56 @@ impl VulkanState {
             extensions.push(debug_utils::NAME.as_ptr());
         }
         extensions
+    }
+    
+    fn pick_adapter(instance: &Instance) -> vk::PhysicalDevice {
+        let adapters = unsafe { instance.enumerate_physical_devices().expect("Failed to enumerate physical devices") };
+        if adapters.len() == 0 {
+            panic!("Failed to find GPUs with Vulkan support");
+        }
+        
+        for adapter in adapters {
+            if Self::is_adapter_suitable(instance, adapter) {
+                return adapter;
+            }
+        }
+        panic!("Failed to find a suitable GPU");
+    }
+    
+    fn is_adapter_suitable(instance: &Instance, adapter: vk::PhysicalDevice) -> bool {
+        let indices = QueueFamilyIndices::find_queue_families(instance, adapter);
+        indices.is_complete()
+    }
+}
+
+struct QueueFamilyIndices {
+    graphics_family: Option<u32>,
+}
+
+impl QueueFamilyIndices {
+    fn find_queue_families(instance: &Instance, adapter: vk::PhysicalDevice) -> Self {
+        let mut indices = Self { graphics_family: None };
+        
+        let queue_families = unsafe { instance.get_physical_device_queue_family_properties(adapter) };
+        
+        let mut i = 0;
+        for queue_family in queue_families {
+            if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                indices.graphics_family = Some(i);
+            }
+            if indices.is_complete() { 
+                break;
+            }
+            i += 1;
+        }
+        
+        Self {
+            graphics_family: indices.graphics_family,
+        }
+    }
+    
+    fn is_complete(&self) -> bool {
+        self.graphics_family.is_some()
     }
 }
 
