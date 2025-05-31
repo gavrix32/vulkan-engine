@@ -1,5 +1,5 @@
 use crate::debug;
-use ash::ext::debug_utils;
+use ash::ext;
 use ash::khr;
 use ash::vk;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -8,7 +8,8 @@ use std::ffi::{CStr, c_char};
 pub struct VulkanState {
     _entry: ash::Entry,
     instance: ash::Instance,
-    debug_utils_instance_messenger: Option<(debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
+    debug_utils_instance_messenger:
+        Option<(ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
     surface: khr::surface::Instance,
     surface_khr: vk::SurfaceKHR,
     _adapter: vk::PhysicalDevice,
@@ -31,12 +32,11 @@ impl VulkanState {
         let debug_utils_instance_messenger =
             debug::setup_debug_messenger(&entry, &instance, &debug_utils_messenger_create_info);
 
-        // surface
         let (surface, surface_khr) =
             Self::create_surface(&entry, &instance, display_handle, window_handle);
 
-        let adapter = Self::pick_adapter(&instance);
-        let (device, queue) = Self::create_device(&instance, adapter);
+        let adapter = Self::pick_adapter(&instance, &surface, surface_khr);
+        let (device, queue) = Self::create_device(&instance, adapter, &surface, surface_khr);
 
         Self {
             _entry: entry,
@@ -115,7 +115,7 @@ impl VulkanState {
             .to_vec();
 
         if debug::ENABLE_VALIDATION_LAYERS {
-            extensions.push(debug_utils::NAME.as_ptr());
+            extensions.push(ext::debug_utils::NAME.as_ptr());
         }
         extensions
     }
@@ -134,7 +134,11 @@ impl VulkanState {
         (surface, surface_khr)
     }
 
-    fn pick_adapter(instance: &ash::Instance) -> vk::PhysicalDevice {
+    fn pick_adapter(
+        instance: &ash::Instance,
+        surface: &khr::surface::Instance,
+        surface_khr: vk::SurfaceKHR,
+    ) -> vk::PhysicalDevice {
         let adapters = unsafe {
             instance
                 .enumerate_physical_devices()
@@ -145,23 +149,32 @@ impl VulkanState {
         }
 
         for adapter in adapters {
-            if Self::is_adapter_suitable(instance, adapter) {
+            if Self::is_adapter_suitable(instance, adapter, surface, surface_khr) {
                 return adapter;
             }
         }
         panic!("Failed to find a suitable GPU");
     }
 
-    fn is_adapter_suitable(instance: &ash::Instance, adapter: vk::PhysicalDevice) -> bool {
-        let indices = QueueFamilyIndices::find_queue_families(instance, adapter);
+    fn is_adapter_suitable(
+        instance: &ash::Instance,
+        adapter: vk::PhysicalDevice,
+        surface: &khr::surface::Instance,
+        surface_khr: vk::SurfaceKHR,
+    ) -> bool {
+        let indices =
+            QueueFamilyIndices::find_queue_families(instance, adapter, surface, surface_khr);
         indices.is_complete()
     }
 
     fn create_device(
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
+        surface: &khr::surface::Instance,
+        surface_khr: vk::SurfaceKHR,
     ) -> (ash::Device, vk::Queue) {
-        let indices = QueueFamilyIndices::find_queue_families(instance, adapter);
+        let indices =
+            QueueFamilyIndices::find_queue_families(instance, adapter, surface, surface_khr);
 
         let queue_priority = 1.0f32;
         let queue_priorities = [queue_priority];
@@ -188,12 +201,19 @@ impl VulkanState {
 
 struct QueueFamilyIndices {
     graphics_family: Option<u32>,
+    present_family: Option<u32>,
 }
 
 impl QueueFamilyIndices {
-    fn find_queue_families(instance: &ash::Instance, adapter: vk::PhysicalDevice) -> Self {
+    fn find_queue_families(
+        instance: &ash::Instance,
+        adapter: vk::PhysicalDevice,
+        surface: &khr::surface::Instance,
+        surface_khr: vk::SurfaceKHR,
+    ) -> Self {
         let mut indices = Self {
             graphics_family: None,
+            present_family: None,
         };
 
         let queue_families =
@@ -204,6 +224,16 @@ impl QueueFamilyIndices {
             if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
                 indices.graphics_family = Some(i);
             }
+
+            let present_support = unsafe {
+                surface
+                    .get_physical_device_surface_support(adapter, i, surface_khr)
+                    .expect("Failed to get adapter surface support")
+            };
+            if present_support {
+                indices.present_family = Some(i);
+            }
+
             if indices.is_complete() {
                 break;
             }
@@ -212,11 +242,12 @@ impl QueueFamilyIndices {
 
         Self {
             graphics_family: indices.graphics_family,
+            present_family: indices.present_family,
         }
     }
 
     fn is_complete(&self) -> bool {
-        self.graphics_family.is_some()
+        self.graphics_family.is_some() && self.present_family.is_some()
     }
 }
 
