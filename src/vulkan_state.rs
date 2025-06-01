@@ -21,6 +21,9 @@ pub struct VulkanState {
     _present_queue: vk::Queue,
     swapchain: khr::swapchain::Device,
     swapchain_khr: vk::SwapchainKHR,
+    _swapchain_images: Vec<vk::Image>,
+    _swapchain_image_format: vk::Format,
+    _swapchain_extent: vk::Extent2D,
 }
 
 impl VulkanState {
@@ -50,15 +53,16 @@ impl VulkanState {
         let (device, graphics_queue, present_queue) =
             Self::create_device(&instance, adapter, &surface, surface_khr);
 
-        let (swapchain, swapchain_khr) = Self::create_swapchain(
-            &instance,
-            adapter,
-            &device,
-            &surface,
-            surface_khr,
-            width,
-            height,
-        );
+        let (swapchain, swapchain_khr, swapchain_images, swapchain_image_format, swapchain_extent) =
+            Self::create_swapchain(
+                &instance,
+                adapter,
+                &device,
+                &surface,
+                surface_khr,
+                width,
+                height,
+            );
 
         Self {
             _entry: entry,
@@ -72,6 +76,9 @@ impl VulkanState {
             _present_queue: present_queue,
             swapchain,
             swapchain_khr,
+            _swapchain_images: swapchain_images,
+            _swapchain_image_format: swapchain_image_format,
+            _swapchain_extent: swapchain_extent,
         }
     }
 
@@ -270,7 +277,13 @@ impl VulkanState {
         surface_khr: vk::SurfaceKHR,
         width: u32,
         height: u32,
-    ) -> (khr::swapchain::Device, vk::SwapchainKHR) {
+    ) -> (
+        khr::swapchain::Device,
+        vk::SwapchainKHR,
+        Vec<vk::Image>,
+        vk::Format,
+        vk::Extent2D,
+    ) {
         let swapchain_support_details =
             SwapchainSupportDetails::query_swapchain_support(adapter, surface, surface_khr);
 
@@ -322,8 +335,19 @@ impl VulkanState {
                 .create_swapchain(&swapchain_create_info, None)
                 .expect("Failed to create swapchain")
         };
+        let swapchain_images = unsafe {
+            swapchain
+                .get_swapchain_images(swapchain_khr)
+                .expect("Failed to get swapchain images")
+        };
 
-        (swapchain, swapchain_khr)
+        (
+            swapchain,
+            swapchain_khr,
+            swapchain_images,
+            surface_format.format,
+            extent,
+        )
     }
 
     fn choose_surface_format(surface_formats: Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
