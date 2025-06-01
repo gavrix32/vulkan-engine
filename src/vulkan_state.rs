@@ -216,8 +216,12 @@ impl VulkanState {
             queue_create_infos.push(queue_create_info);
         }
 
-        let device_create_info =
-            vk::DeviceCreateInfo::default().queue_create_infos(&queue_create_infos);
+        let adapter_extension_name_pointers: Vec<*const c_char> =
+            ADAPTER_EXTENSIONS.iter().map(|s| s.as_ptr()).collect();
+
+        let device_create_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queue_create_infos)
+            .enabled_extension_names(&*adapter_extension_name_pointers);
 
         let device = unsafe {
             instance
@@ -282,6 +286,34 @@ impl QueueFamilyIndices {
 
     fn is_complete(&self) -> bool {
         self.graphics_family.is_some() && self.present_family.is_some()
+    }
+}
+
+struct SwapchainSupportDetails {
+    capabilities: vk::SurfaceCapabilitiesKHR,
+    formats: Vec<vk::SurfaceFormatKHR>,
+    present_modes: Vec<vk::PresentModeKHR>,
+}
+
+impl SwapchainSupportDetails {
+    fn query_swapchain_support(
+        adapter: vk::PhysicalDevice,
+        surface: khr::surface::Instance,
+        surface_khr: vk::SurfaceKHR,
+    ) -> Self {
+        unsafe {
+            Self {
+                capabilities: surface
+                    .get_physical_device_surface_capabilities(adapter, surface_khr)
+                    .expect("Failed to get adapter surface capabilities"),
+                formats: surface
+                    .get_physical_device_surface_formats(adapter, surface_khr)
+                    .expect("Failed to get adapter surface formats"),
+                present_modes: surface
+                    .get_physical_device_surface_present_modes(adapter, surface_khr)
+                    .expect("Failed to get adapter surface present modes"),
+            }
+        }
     }
 }
 
