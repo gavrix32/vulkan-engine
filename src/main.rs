@@ -11,6 +11,9 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+const WIDTH: u32 = 800;
+const HEIGHT: u32 = 800;
+
 #[derive(Default)]
 struct App {
     window: Option<Window>,
@@ -21,14 +24,19 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window_attribs = WindowAttributes::default()
             .with_title("Vulkan")
-            .with_inner_size(PhysicalSize::new(800, 600));
+            .with_inner_size(PhysicalSize::new(WIDTH, HEIGHT));
 
         let window = event_loop.create_window(window_attribs).unwrap();
         let raw_display_handle = window.display_handle().unwrap().as_raw();
         let raw_window_handle = window.window_handle().unwrap().as_raw();
 
         self.window = Some(window);
-        self.state = Some(VulkanState::new(raw_display_handle, raw_window_handle));
+        self.state = Some(VulkanState::new(
+            WIDTH,
+            HEIGHT,
+            raw_display_handle,
+            raw_window_handle,
+        ));
     }
 
     fn window_event(
