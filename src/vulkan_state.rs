@@ -1,10 +1,12 @@
-use std::collections::HashSet;
 use crate::debug;
 use ash::ext;
 use ash::khr;
 use ash::vk;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+use std::collections::HashSet;
 use std::ffi::{CStr, c_char};
+
+const ADAPTER_EXTENSIONS: [&CStr; 1] = [khr::swapchain::NAME];
 
 pub struct VulkanState {
     _entry: ash::Entry,
@@ -38,7 +40,8 @@ impl VulkanState {
             Self::create_surface(&entry, &instance, display_handle, window_handle);
 
         let adapter = Self::pick_adapter(&instance, &surface, surface_khr);
-        let (device, graphics_queue, present_queue) = Self::create_device(&instance, adapter, &surface, surface_khr);
+        let (device, graphics_queue, present_queue) =
+            Self::create_device(&instance, adapter, &surface, surface_khr);
 
         Self {
             _entry: entry,
@@ -167,7 +170,25 @@ impl VulkanState {
     ) -> bool {
         let indices =
             QueueFamilyIndices::find_queue_families(instance, adapter, surface, surface_khr);
-        indices.is_complete()
+        let extensions_supported = Self::check_adapter_extensions_support(instance, adapter);
+        indices.is_complete() && extensions_supported
+    }
+
+    fn check_adapter_extensions_support(
+        instance: &ash::Instance,
+        adapter: vk::PhysicalDevice,
+    ) -> bool {
+        let available_extensions = unsafe {
+            instance
+                .enumerate_device_extension_properties(adapter)
+                .expect("Failed to enumerate adapter extension properties")
+        };
+        let mut required_extensions = HashSet::from(ADAPTER_EXTENSIONS);
+        for extension in available_extensions {
+            let extension_name_cstr = unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) };
+            required_extensions.remove(extension_name_cstr);
+        }
+        required_extensions.is_empty()
     }
 
     fn create_device(
@@ -187,14 +208,14 @@ impl VulkanState {
         unique_queue_families.insert(indices.present_family.unwrap());
 
         let mut queue_create_infos = Vec::new();
-        
+
         for queue_family in unique_queue_families {
             let queue_create_info = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family)
                 .queue_priorities(&queue_priorities);
             queue_create_infos.push(queue_create_info);
         }
-        
+
         let device_create_info =
             vk::DeviceCreateInfo::default().queue_create_infos(&queue_create_infos);
 
@@ -204,7 +225,8 @@ impl VulkanState {
                 .expect("Failed to create device")
         };
 
-        let graphics_queue = unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
+        let graphics_queue =
+            unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
         let present_queue = unsafe { device.get_device_queue(indices.present_family.unwrap(), 0) };
 
         (device, graphics_queue, present_queue)
