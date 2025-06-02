@@ -24,6 +24,7 @@ pub struct VulkanState {
     _swapchain_images: Vec<vk::Image>,
     _swapchain_image_format: vk::Format,
     _swapchain_extent: vk::Extent2D,
+    swapchain_image_views: Vec<vk::ImageView>,
 }
 
 impl VulkanState {
@@ -63,6 +64,8 @@ impl VulkanState {
                 width,
                 height,
             );
+        
+        let swapchain_image_views = Self::create_image_views(&swapchain_images, &swapchain_image_format, &device);
 
         Self {
             _entry: entry,
@@ -79,6 +82,7 @@ impl VulkanState {
             _swapchain_images: swapchain_images,
             _swapchain_image_format: swapchain_image_format,
             _swapchain_extent: swapchain_extent,
+            swapchain_image_views,
         }
     }
 
@@ -350,6 +354,44 @@ impl VulkanState {
         )
     }
 
+    fn create_image_views(
+        swapchain_images: &Vec<vk::Image>,
+        swapchain_image_format: &vk::Format,
+        device: &ash::Device,
+    ) -> Vec<vk::ImageView> {
+        let mut image_views = Vec::new();
+
+        for i in 0..swapchain_images.len() {
+            let image_view_create_info = vk::ImageViewCreateInfo::default()
+                .image(swapchain_images[i])
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(*swapchain_image_format)
+                .components(
+                    vk::ComponentMapping::default()
+                        .r(vk::ComponentSwizzle::IDENTITY)
+                        .g(vk::ComponentSwizzle::IDENTITY)
+                        .b(vk::ComponentSwizzle::IDENTITY)
+                        .a(vk::ComponentSwizzle::IDENTITY),
+                )
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                );
+
+            let image_view = unsafe {
+                device
+                    .create_image_view(&image_view_create_info, None)
+                    .expect("Failed to create image views")
+            };
+            image_views.push(image_view)
+        }
+        image_views
+    }
+
     fn choose_surface_format(surface_formats: Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
         for surface_format in &surface_formats {
             if surface_format.format == vk::Format::B8G8R8A8_SRGB
@@ -475,6 +517,9 @@ impl SwapchainSupportDetails {
 impl Drop for VulkanState {
     fn drop(&mut self) {
         unsafe {
+            for image_view in &self.swapchain_image_views {
+                self.device.destroy_image_view(*image_view, None);
+            }
             self.swapchain.destroy_swapchain(self.swapchain_khr, None);
             self.device.destroy_device(None);
             if let Some((instance, messenger)) = self.debug_utils_instance_messenger.take() {
