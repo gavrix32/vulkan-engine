@@ -22,9 +22,10 @@ pub struct VulkanState {
     swapchain: khr::swapchain::Device,
     swapchain_khr: vk::SwapchainKHR,
     _swapchain_images: Vec<vk::Image>,
-    _swapchain_image_format: vk::Format,
+    swapchain_image_format: vk::Format,
     _swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
+    render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
 }
 
@@ -35,7 +36,7 @@ impl VulkanState {
         display_handle: RawDisplayHandle,
         window_handle: RawWindowHandle,
     ) -> Self {
-        let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan library") };
+        let entry = unsafe { ash::Entry::load() }.expect("Failed to load Vulkan library");
 
         let mut debug_utils_messenger_create_info = debug::create_debug_messenger_create_info();
 
@@ -69,6 +70,8 @@ impl VulkanState {
         let swapchain_image_views =
             Self::create_image_views(&swapchain_images, &swapchain_image_format, &device);
 
+        let render_pass = Self::create_render_pass(&device, swapchain_image_format);
+
         let pipeline_layout = Self::create_graphics_pipeline(&device, swapchain_extent);
 
         Self {
@@ -84,9 +87,10 @@ impl VulkanState {
             swapchain,
             swapchain_khr,
             _swapchain_images: swapchain_images,
-            _swapchain_image_format: swapchain_image_format,
+            swapchain_image_format,
             _swapchain_extent: swapchain_extent,
             swapchain_image_views,
+            render_pass,
             pipeline_layout,
         }
     }
@@ -123,16 +127,14 @@ impl VulkanState {
         unsafe {
             entry
                 .create_instance(&debug_instance_create_info, None)
-                .expect("Failed to create VkInstance")
-        }
+        }.expect("Failed to create VkInstance")
     }
 
     fn check_validation_layer_support(entry: &ash::Entry) -> bool {
         let available_layers = unsafe {
             entry
                 .enumerate_instance_layer_properties()
-                .expect("Failed to enumerate layer properties")
-        };
+        }.expect("Failed to enumerate layer properties");
         for layer_name in debug::VALIDATION_LAYERS {
             let mut layer_found = false;
 
@@ -170,8 +172,7 @@ impl VulkanState {
         let surface = khr::surface::Instance::new(&entry, &instance);
         let surface_khr = unsafe {
             ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
-                .expect("Failed to create window surface")
-        };
+        }.expect("Failed to create window surface");
         (surface, surface_khr)
     }
 
@@ -183,8 +184,7 @@ impl VulkanState {
         let adapters = unsafe {
             instance
                 .enumerate_physical_devices()
-                .expect("Failed to enumerate physical devices")
-        };
+        }.expect("Failed to enumerate physical devices");
         if adapters.len() == 0 {
             panic!("Failed to find GPUs with Vulkan support");
         }
@@ -223,8 +223,7 @@ impl VulkanState {
         let available_extensions = unsafe {
             instance
                 .enumerate_device_extension_properties(adapter)
-                .expect("Failed to enumerate adapter extension properties")
-        };
+        }.expect("Failed to enumerate adapter extension properties");
         let mut required_extensions = HashSet::from(ADAPTER_EXTENSIONS);
         for extension in available_extensions {
             let extension_name_cstr = unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) };
@@ -268,8 +267,8 @@ impl VulkanState {
         let device = unsafe {
             instance
                 .create_device(adapter, &device_create_info, None)
-                .expect("Failed to create device")
-        };
+                
+        }.expect("Failed to create device");
 
         let graphics_queue =
             unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
@@ -342,13 +341,11 @@ impl VulkanState {
         let swapchain_khr = unsafe {
             swapchain
                 .create_swapchain(&swapchain_create_info, None)
-                .expect("Failed to create swapchain")
-        };
+        }.expect("Failed to create swapchain");
         let swapchain_images = unsafe {
             swapchain
                 .get_swapchain_images(swapchain_khr)
-                .expect("Failed to get swapchain images")
-        };
+        }.expect("Failed to get swapchain images");
 
         (
             swapchain,
@@ -390,8 +387,7 @@ impl VulkanState {
             let image_view = unsafe {
                 device
                     .create_image_view(&image_view_create_info, None)
-                    .expect("Failed to create image views")
-            };
+            }.expect("Failed to create image views");
             image_views.push(image_view)
         }
         image_views
@@ -471,15 +467,43 @@ impl VulkanState {
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(&pipeline_layout_create_info, None)
-                .expect("Failed to create pipeline layout")
-        };
+        }.expect("Failed to create pipeline layout");
 
         unsafe {
             device.destroy_shader_module(vertex_shader_module, None);
             device.destroy_shader_module(fragment_shader_module, None);
         }
-        
+
         pipeline_layout
+    }
+
+    fn create_render_pass(device: &ash::Device, swapchain_image_format: vk::Format) -> vk::RenderPass {
+        let color_attachment_description = vk::AttachmentDescription::default()
+            .format(swapchain_image_format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+        let color_attachment_descriptions = [color_attachment_description];
+
+        let color_attachment_reference = vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let color_attachment_references = [color_attachment_reference];
+
+        let subpass_description = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&color_attachment_references);
+        let subpass_descriptions = [subpass_description];
+        
+        let render_pass_create_info = vk::RenderPassCreateInfo::default()
+            .attachments(&color_attachment_descriptions)
+            .subpasses(&subpass_descriptions);
+
+        unsafe { device.create_render_pass(&render_pass_create_info, None) }.expect("Failed to create render pass") 
     }
 
     fn create_shader_module(device: &ash::Device, words: &[u32]) -> vk::ShaderModule {
@@ -487,8 +511,7 @@ impl VulkanState {
         unsafe {
             device
                 .create_shader_module(&shader_module_create_info, None)
-                .expect("Failed to create shader module")
-        }
+        }.expect("Failed to create shader module")
     }
 
     fn choose_surface_format(surface_formats: Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
@@ -562,8 +585,7 @@ impl QueueFamilyIndices {
             let present_support = unsafe {
                 surface
                     .get_physical_device_surface_support(adapter, i, surface_khr)
-                    .expect("Failed to get adapter surface support")
-            };
+            }.expect("Failed to get adapter surface support");
             if present_support {
                 indices.present_family = Some(i);
             }
