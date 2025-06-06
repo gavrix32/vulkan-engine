@@ -6,7 +6,7 @@ use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::collections::HashSet;
 use std::ffi::{CStr, c_char};
 
-const ADAPTER_EXTENSIONS: [&CStr; 1] = [khr::swapchain::NAME];
+const ADAPTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 
 pub struct VulkanState {
     _entry: ash::Entry,
@@ -25,6 +25,7 @@ pub struct VulkanState {
     _swapchain_image_format: vk::Format,
     _swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
+    pipeline_layout: vk::PipelineLayout,
 }
 
 impl VulkanState {
@@ -64,8 +65,11 @@ impl VulkanState {
                 width,
                 height,
             );
-        
-        let swapchain_image_views = Self::create_image_views(&swapchain_images, &swapchain_image_format, &device);
+
+        let swapchain_image_views =
+            Self::create_image_views(&swapchain_images, &swapchain_image_format, &device);
+
+        let pipeline_layout = Self::create_graphics_pipeline(&device, swapchain_extent);
 
         Self {
             _entry: entry,
@@ -83,6 +87,7 @@ impl VulkanState {
             _swapchain_image_format: swapchain_image_format,
             _swapchain_extent: swapchain_extent,
             swapchain_image_views,
+            pipeline_layout,
         }
     }
 
@@ -93,10 +98,10 @@ impl VulkanState {
     ) -> ash::Instance {
         let app_info = vk::ApplicationInfo::default()
             .application_name(c"Hello Triangle")
-            .application_version(0)
+            .application_version(vk::make_api_version(0, 1, 0, 0))
             .engine_name(c"No Engine")
             .engine_version(0)
-            .application_version(vk::make_api_version(0, 1, 0, 0));
+            .api_version(vk::make_api_version(0, 1, 3, 0));
 
         let required_extensions = Self::get_required_extensions(display_handle);
 
@@ -392,6 +397,100 @@ impl VulkanState {
         image_views
     }
 
+    fn create_graphics_pipeline(device: &ash::Device, swapchain_extent: vk::Extent2D) -> vk::PipelineLayout {
+        let mut vertex_shader_file = std::fs::File::open("src/shaders/spirv/vertex.spv")
+            .expect("Failed to open vertex shader file");
+        let vertex_shader_code = ash::util::read_spv(&mut vertex_shader_file).unwrap();
+
+        let mut fragment_shader_file = std::fs::File::open("src/shaders/spirv/fragment.spv")
+            .expect("Failed to open fragment shader file");
+        let fragment_shader_code = ash::util::read_spv(&mut fragment_shader_file).unwrap();
+
+        let vertex_shader_module =
+            Self::create_shader_module(device, vertex_shader_code.as_slice());
+        let fragment_shader_module =
+            Self::create_shader_module(device, fragment_shader_code.as_slice());
+
+        let vertex_shader_stage_info = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vertex_shader_module)
+            .name(c"main");
+        let fragment_shader_stage_info = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(fragment_shader_module)
+            .name(c"main");
+
+        let shader_stage_create_infos = [vertex_shader_stage_info, fragment_shader_stage_info];
+
+        let vertex_input_state_create_info = vk::PipelineVertexInputStateCreateInfo::default();
+
+        let input_assembly_state_create_info = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+        let viewport = vk::Viewport::default()
+            .x(0.0)
+            .y(0.0)
+            .width(swapchain_extent.width as f32)
+            .height(swapchain_extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0);
+
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+
+        let dynamic_state_create_info =
+            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+        let viewport_state_create_info = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+
+        let rasterizer_state_create_info = vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .depth_bias_enable(false);
+
+        let multisample_state_create_info = vk::PipelineMultisampleStateCreateInfo::default()
+            .sample_shading_enable(false)
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+        let color_blend_attachment_state = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false);
+
+        let color_blend_state_create_info = vk::PipelineColorBlendStateCreateInfo::default()
+            .logic_op_enable(false)
+            .attachments(&[color_blend_attachment_state]);
+
+        let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default();
+
+        let pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(&pipeline_layout_create_info, None)
+                .expect("Failed to create pipeline layout")
+        };
+
+        unsafe {
+            device.destroy_shader_module(vertex_shader_module, None);
+            device.destroy_shader_module(fragment_shader_module, None);
+        }
+        
+        pipeline_layout
+    }
+
+    fn create_shader_module(device: &ash::Device, words: &[u32]) -> vk::ShaderModule {
+        let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(words);
+        unsafe {
+            device
+                .create_shader_module(&shader_module_create_info, None)
+                .expect("Failed to create shader module")
+        }
+    }
+
     fn choose_surface_format(surface_formats: Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
         for surface_format in &surface_formats {
             if surface_format.format == vk::Format::B8G8R8A8_SRGB
@@ -517,6 +616,7 @@ impl SwapchainSupportDetails {
 impl Drop for VulkanState {
     fn drop(&mut self) {
         unsafe {
+            self.device.destroy_pipeline_layout(self.pipeline_layout, None);
             for image_view in &self.swapchain_image_views {
                 self.device.destroy_image_view(*image_view, None);
             }

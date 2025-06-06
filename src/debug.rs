@@ -48,11 +48,13 @@ unsafe extern "system" fn debug_callback(
     use vk::DebugUtilsMessageSeverityFlagsEXT as SeverityFlag;
 
     let message = unsafe { CStr::from_ptr((*p_callback_data).p_message) };
+    let message_str = message.to_str().unwrap();
+
     match message_severity {
-        SeverityFlag::VERBOSE => log::trace!("{:?} - {:?}", message_type, message),
-        SeverityFlag::INFO => log::info!("{:?} - {:?}", message_type, message),
-        SeverityFlag::WARNING => log::warn!("{:?} - {:?}", message_type, message),
-        _ => log::error!("{:?} - {:?}", message_type, message),
+        SeverityFlag::VERBOSE => log::trace!("{:?} - {}", message_type, message_str),
+        SeverityFlag::INFO => log::info!("{:?} - {}", message_type, message_str),
+        SeverityFlag::WARNING => log::warn!("{:?} - {}", message_type, message_str),
+        _ => log::error!("{:?} - {}", message_type, message_str),
     }
     vk::FALSE
 }
