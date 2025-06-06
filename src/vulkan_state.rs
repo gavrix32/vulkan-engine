@@ -22,11 +22,12 @@ pub struct VulkanState {
     swapchain: khr::swapchain::Device,
     swapchain_khr: vk::SwapchainKHR,
     _swapchain_images: Vec<vk::Image>,
-    swapchain_image_format: vk::Format,
+    _swapchain_image_format: vk::Format,
     _swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
 }
 
 impl VulkanState {
@@ -72,7 +73,7 @@ impl VulkanState {
 
         let render_pass = Self::create_render_pass(&device, swapchain_image_format);
 
-        let pipeline_layout = Self::create_graphics_pipeline(&device, swapchain_extent);
+        let (pipeline_layout, pipeline) = Self::create_graphics_pipeline(&device, swapchain_extent, render_pass);
 
         Self {
             _entry: entry,
@@ -87,11 +88,12 @@ impl VulkanState {
             swapchain,
             swapchain_khr,
             _swapchain_images: swapchain_images,
-            swapchain_image_format,
+            _swapchain_image_format: swapchain_image_format,
             _swapchain_extent: swapchain_extent,
             swapchain_image_views,
             render_pass,
             pipeline_layout,
+            pipeline,
         }
     }
 
@@ -124,17 +126,13 @@ impl VulkanState {
                 .push_next(debug_create_info);
         }
 
-        unsafe {
-            entry
-                .create_instance(&debug_instance_create_info, None)
-        }.expect("Failed to create VkInstance")
+        unsafe { entry.create_instance(&debug_instance_create_info, None) }
+            .expect("Failed to create VkInstance")
     }
 
     fn check_validation_layer_support(entry: &ash::Entry) -> bool {
-        let available_layers = unsafe {
-            entry
-                .enumerate_instance_layer_properties()
-        }.expect("Failed to enumerate layer properties");
+        let available_layers = unsafe { entry.enumerate_instance_layer_properties() }
+            .expect("Failed to enumerate layer properties");
         for layer_name in debug::VALIDATION_LAYERS {
             let mut layer_found = false;
 
@@ -172,7 +170,8 @@ impl VulkanState {
         let surface = khr::surface::Instance::new(&entry, &instance);
         let surface_khr = unsafe {
             ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
-        }.expect("Failed to create window surface");
+        }
+        .expect("Failed to create window surface");
         (surface, surface_khr)
     }
 
@@ -181,10 +180,8 @@ impl VulkanState {
         surface: &khr::surface::Instance,
         surface_khr: vk::SurfaceKHR,
     ) -> vk::PhysicalDevice {
-        let adapters = unsafe {
-            instance
-                .enumerate_physical_devices()
-        }.expect("Failed to enumerate physical devices");
+        let adapters = unsafe { instance.enumerate_physical_devices() }
+            .expect("Failed to enumerate physical devices");
         if adapters.len() == 0 {
             panic!("Failed to find GPUs with Vulkan support");
         }
@@ -220,10 +217,9 @@ impl VulkanState {
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
     ) -> bool {
-        let available_extensions = unsafe {
-            instance
-                .enumerate_device_extension_properties(adapter)
-        }.expect("Failed to enumerate adapter extension properties");
+        let available_extensions =
+            unsafe { instance.enumerate_device_extension_properties(adapter) }
+                .expect("Failed to enumerate adapter extension properties");
         let mut required_extensions = HashSet::from(ADAPTER_EXTENSIONS);
         for extension in available_extensions {
             let extension_name_cstr = unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) };
@@ -264,11 +260,8 @@ impl VulkanState {
             .queue_create_infos(&queue_create_infos)
             .enabled_extension_names(&*adapter_extension_name_pointers);
 
-        let device = unsafe {
-            instance
-                .create_device(adapter, &device_create_info, None)
-                
-        }.expect("Failed to create device");
+        let device = unsafe { instance.create_device(adapter, &device_create_info, None) }
+            .expect("Failed to create device");
 
         let graphics_queue =
             unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
@@ -338,14 +331,10 @@ impl VulkanState {
         }
 
         let swapchain = khr::swapchain::Device::new(instance, device);
-        let swapchain_khr = unsafe {
-            swapchain
-                .create_swapchain(&swapchain_create_info, None)
-        }.expect("Failed to create swapchain");
-        let swapchain_images = unsafe {
-            swapchain
-                .get_swapchain_images(swapchain_khr)
-        }.expect("Failed to get swapchain images");
+        let swapchain_khr = unsafe { swapchain.create_swapchain(&swapchain_create_info, None) }
+            .expect("Failed to create swapchain");
+        let swapchain_images = unsafe { swapchain.get_swapchain_images(swapchain_khr) }
+            .expect("Failed to get swapchain images");
 
         (
             swapchain,
@@ -384,16 +373,18 @@ impl VulkanState {
                         .layer_count(1),
                 );
 
-            let image_view = unsafe {
-                device
-                    .create_image_view(&image_view_create_info, None)
-            }.expect("Failed to create image views");
+            let image_view = unsafe { device.create_image_view(&image_view_create_info, None) }
+                .expect("Failed to create image views");
             image_views.push(image_view)
         }
         image_views
     }
 
-    fn create_graphics_pipeline(device: &ash::Device, swapchain_extent: vk::Extent2D) -> vk::PipelineLayout {
+    fn create_graphics_pipeline(
+        device: &ash::Device,
+        swapchain_extent: vk::Extent2D,
+        render_pass: vk::RenderPass,
+    ) -> (vk::PipelineLayout, vk::Pipeline) {
         let mut vertex_shader_file = std::fs::File::open("src/shaders/spirv/vertex.spv")
             .expect("Failed to open vertex shader file");
         let vertex_shader_code = ash::util::read_spv(&mut vertex_shader_file).unwrap();
@@ -418,12 +409,13 @@ impl VulkanState {
 
         let shader_stage_create_infos = [vertex_shader_stage_info, fragment_shader_stage_info];
 
-        let vertex_input_state_create_info = vk::PipelineVertexInputStateCreateInfo::default();
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default();
 
-        let input_assembly_state_create_info = vk::PipelineInputAssemblyStateCreateInfo::default()
+        let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
 
+        #[allow(unused)]
         let viewport = vk::Viewport::default()
             .x(0.0)
             .y(0.0)
@@ -434,14 +426,14 @@ impl VulkanState {
 
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
-        let dynamic_state_create_info =
+        let dynamic_state =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-        let viewport_state_create_info = vk::PipelineViewportStateCreateInfo::default()
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
             .viewport_count(1)
             .scissor_count(1);
 
-        let rasterizer_state_create_info = vk::PipelineRasterizationStateCreateInfo::default()
+        let rasterizer_state = vk::PipelineRasterizationStateCreateInfo::default()
             .depth_clamp_enable(false)
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
@@ -450,34 +442,53 @@ impl VulkanState {
             .front_face(vk::FrontFace::CLOCKWISE)
             .depth_bias_enable(false);
 
-        let multisample_state_create_info = vk::PipelineMultisampleStateCreateInfo::default()
+        let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
             .sample_shading_enable(false)
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
         let color_blend_attachment_state = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(false);
+        let color_blend_attachment_states = [color_blend_attachment_state];
 
-        let color_blend_state_create_info = vk::PipelineColorBlendStateCreateInfo::default()
+        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
-            .attachments(&[color_blend_attachment_state]);
+            .attachments(&color_blend_attachment_states);
 
         let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default();
 
-        let pipeline_layout = unsafe {
-            device
-                .create_pipeline_layout(&pipeline_layout_create_info, None)
-        }.expect("Failed to create pipeline layout");
+        let pipeline_layout =
+            unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }
+                .expect("Failed to create pipeline layout");
 
+        let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stage_create_infos)
+            .vertex_input_state(&vertex_input_state)
+            .input_assembly_state(&input_assembly_state)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer_state)
+            .multisample_state(&multisample_state)
+            .color_blend_state(&color_blend_state)
+            .dynamic_state(&dynamic_state)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+        
+        let graphics_pipelines = unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_create_info], None) }
+            .expect("Failed to create graphics pipelines");
+        
         unsafe {
             device.destroy_shader_module(vertex_shader_module, None);
             device.destroy_shader_module(fragment_shader_module, None);
         }
 
-        pipeline_layout
+        (pipeline_layout, graphics_pipelines[0])
     }
 
-    fn create_render_pass(device: &ash::Device, swapchain_image_format: vk::Format) -> vk::RenderPass {
+    fn create_render_pass(
+        device: &ash::Device,
+        swapchain_image_format: vk::Format,
+    ) -> vk::RenderPass {
         let color_attachment_description = vk::AttachmentDescription::default()
             .format(swapchain_image_format)
             .samples(vk::SampleCountFlags::TYPE_1)
@@ -498,20 +509,19 @@ impl VulkanState {
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&color_attachment_references);
         let subpass_descriptions = [subpass_description];
-        
+
         let render_pass_create_info = vk::RenderPassCreateInfo::default()
             .attachments(&color_attachment_descriptions)
             .subpasses(&subpass_descriptions);
 
-        unsafe { device.create_render_pass(&render_pass_create_info, None) }.expect("Failed to create render pass") 
+        unsafe { device.create_render_pass(&render_pass_create_info, None) }
+            .expect("Failed to create render pass")
     }
 
     fn create_shader_module(device: &ash::Device, words: &[u32]) -> vk::ShaderModule {
         let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(words);
-        unsafe {
-            device
-                .create_shader_module(&shader_module_create_info, None)
-        }.expect("Failed to create shader module")
+        unsafe { device.create_shader_module(&shader_module_create_info, None) }
+            .expect("Failed to create shader module")
     }
 
     fn choose_surface_format(surface_formats: Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
@@ -582,10 +592,9 @@ impl QueueFamilyIndices {
                 indices.graphics_family = Some(i);
             }
 
-            let present_support = unsafe {
-                surface
-                    .get_physical_device_surface_support(adapter, i, surface_khr)
-            }.expect("Failed to get adapter surface support");
+            let present_support =
+                unsafe { surface.get_physical_device_surface_support(adapter, i, surface_khr) }
+                    .expect("Failed to get adapter surface support");
             if present_support {
                 indices.present_family = Some(i);
             }
@@ -638,7 +647,10 @@ impl SwapchainSupportDetails {
 impl Drop for VulkanState {
     fn drop(&mut self) {
         unsafe {
-            self.device.destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_pipeline(self.pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_render_pass(self.render_pass, None);
             for image_view in &self.swapchain_image_views {
                 self.device.destroy_image_view(*image_view, None);
             }
