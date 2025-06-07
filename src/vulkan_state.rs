@@ -28,6 +28,7 @@ pub struct VulkanState {
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    swapchain_framebuffers: Vec<vk::Framebuffer>,
 }
 
 impl VulkanState {
@@ -73,7 +74,15 @@ impl VulkanState {
 
         let render_pass = Self::create_render_pass(&device, swapchain_image_format);
 
-        let (pipeline_layout, pipeline) = Self::create_graphics_pipeline(&device, swapchain_extent, render_pass);
+        let (pipeline_layout, pipeline) =
+            Self::create_graphics_pipeline(&device, swapchain_extent, render_pass);
+
+        let swapchain_framebuffers = Self::create_framebuffers(
+            &device,
+            &swapchain_image_views,
+            render_pass,
+            swapchain_extent,
+        );
 
         Self {
             _entry: entry,
@@ -94,6 +103,7 @@ impl VulkanState {
             render_pass,
             pipeline_layout,
             pipeline,
+            swapchain_framebuffers,
         }
     }
 
@@ -473,16 +483,44 @@ impl VulkanState {
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(0);
-        
-        let graphics_pipelines = unsafe { device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_create_info], None) }
-            .expect("Failed to create graphics pipelines");
-        
+
+        let graphics_pipelines = unsafe {
+            device.create_graphics_pipelines(
+                vk::PipelineCache::null(),
+                &[pipeline_create_info],
+                None,
+            )
+        }
+        .expect("Failed to create graphics pipelines");
+
         unsafe {
             device.destroy_shader_module(vertex_shader_module, None);
             device.destroy_shader_module(fragment_shader_module, None);
         }
 
         (pipeline_layout, graphics_pipelines[0])
+    }
+
+    fn create_framebuffers(
+        device: &ash::Device,
+        swapchain_image_views: &Vec<vk::ImageView>,
+        render_pass: vk::RenderPass,
+        swapchain_extent: vk::Extent2D,
+    ) -> Vec<vk::Framebuffer> {
+        let mut framebuffers = Vec::with_capacity(swapchain_image_views.len());
+        for i in 0..framebuffers.len() {
+            let attachments = [swapchain_image_views[i]];
+            let framebuffer_create_info = vk::FramebufferCreateInfo::default()
+                .render_pass(render_pass)
+                .attachments(&attachments)
+                .width(swapchain_extent.width)
+                .height(swapchain_extent.height)
+                .layers(1);
+
+            framebuffers[i] = unsafe { device.create_framebuffer(&framebuffer_create_info, None) }
+                .expect("Failed to create framebuffer");
+        }
+        framebuffers
     }
 
     fn create_render_pass(
@@ -647,6 +685,9 @@ impl SwapchainSupportDetails {
 impl Drop for VulkanState {
     fn drop(&mut self) {
         unsafe {
+            for framebuffer in &self.swapchain_framebuffers {
+                self.device.destroy_framebuffer(*framebuffer, None);
+            }
             self.device.destroy_pipeline(self.pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
