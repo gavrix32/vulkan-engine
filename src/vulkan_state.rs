@@ -31,6 +31,7 @@ pub struct VulkanState {
     pipeline: vk::Pipeline,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
+    command_buffer: vk::CommandBuffer,
 }
 
 impl VulkanState {
@@ -88,6 +89,8 @@ impl VulkanState {
         );
 
         let command_pool = Self::create_command_pool(&device, &queue_family_indices);
+        
+        let command_buffer = Self::create_command_buffer(&device, command_pool);
 
         Self {
             _entry: entry,
@@ -111,6 +114,7 @@ impl VulkanState {
             pipeline,
             swapchain_framebuffers,
             command_pool,
+            command_buffer,
         }
     }
 
@@ -204,7 +208,8 @@ impl VulkanState {
         }
 
         for adapter in adapters {
-            let (adapter_suitable, queue_family_indices) = Self::is_adapter_suitable(instance, adapter, surface, surface_khr);
+            let (adapter_suitable, queue_family_indices) =
+                Self::is_adapter_suitable(instance, adapter, surface, surface_khr);
             if adapter_suitable {
                 return (adapter, queue_family_indices);
             }
@@ -228,7 +233,10 @@ impl VulkanState {
             swapchain_adequate = !swapchain_support.formats.is_empty()
                 && !swapchain_support.present_modes.is_empty();
         }
-        (indices.is_complete() && extensions_supported && swapchain_adequate, indices)
+        (
+            indices.is_complete() && extensions_supported && swapchain_adequate,
+            indices,
+        )
     }
 
     fn check_adapter_extensions_support(
@@ -279,7 +287,8 @@ impl VulkanState {
 
         let graphics_queue =
             unsafe { device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0) };
-        let present_queue = unsafe { device.get_device_queue(queue_family_indices.present_family.unwrap(), 0) };
+        let present_queue =
+            unsafe { device.get_device_queue(queue_family_indices.present_family.unwrap(), 0) };
 
         (device, graphics_queue, present_queue)
     }
@@ -336,8 +345,7 @@ impl VulkanState {
         if queue_family_indices.graphics_family != queue_family_indices.present_family {
             swapchain_create_info =
                 swapchain_create_info.image_sharing_mode(vk::SharingMode::CONCURRENT);
-            swapchain_create_info =
-                swapchain_create_info.queue_family_indices(&indices);
+            swapchain_create_info = swapchain_create_info.queue_family_indices(&indices);
         } else {
             swapchain_create_info =
                 swapchain_create_info.image_sharing_mode(vk::SharingMode::EXCLUSIVE);
@@ -428,15 +436,6 @@ impl VulkanState {
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
 
-        #[allow(unused)]
-        let viewport = vk::Viewport::default()
-            .x(0.0)
-            .y(0.0)
-            .width(swapchain_extent.width as f32)
-            .height(swapchain_extent.height as f32)
-            .min_depth(0.0)
-            .max_depth(1.0);
-
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
         let dynamic_state =
@@ -526,12 +525,91 @@ impl VulkanState {
         framebuffers
     }
 
-    fn create_command_pool(device: &ash::Device, queue_family_indices: &QueueFamilyIndices) -> vk::CommandPool {
+    fn create_command_pool(
+        device: &ash::Device,
+        queue_family_indices: &QueueFamilyIndices,
+    ) -> vk::CommandPool {
         let command_pool_create_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(queue_family_indices.graphics_family.unwrap());
 
-        unsafe { device.create_command_pool(&command_pool_create_info, None) }.expect("Failed to create command pool")
+        unsafe { device.create_command_pool(&command_pool_create_info, None) }
+            .expect("Failed to create command pool")
+    }
+
+    fn create_command_buffer(
+        device: &ash::Device,
+        command_pool: vk::CommandPool,
+    ) -> vk::CommandBuffer {
+        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        unsafe { device.allocate_command_buffers(&command_buffer_allocate_info) }
+            .expect("Failed to allocate command buffers")[0]
+    }
+
+    fn record_command_buffer(
+        device: ash::Device,
+        command_buffer: vk::CommandBuffer,
+        render_pass: vk::RenderPass,
+        framebuffer: vk::Framebuffer,
+        swapchain_extent: vk::Extent2D,
+        pipeline: vk::Pipeline,
+    ) {
+        let clear_color = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
+        let clear_color_values = [clear_color];
+
+        let render_pass_begin_info = vk::RenderPassBeginInfo::default()
+            .render_pass(render_pass)
+            .framebuffer(framebuffer)
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: swapchain_extent,
+            })
+            .clear_values(&clear_color_values);
+
+        let viewport = vk::Viewport::default()
+            .x(0.0)
+            .y(0.0)
+            .width(swapchain_extent.width as f32)
+            .height(swapchain_extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0);
+        let viewports = [viewport];
+
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: swapchain_extent,
+        };
+        let scissors = [scissor];
+
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
+
+        unsafe { device.begin_command_buffer(command_buffer, &command_buffer_begin_info) }
+            .expect("Failed to begin recording command buffer");
+
+        unsafe {
+            device.cmd_begin_render_pass(
+                command_buffer,
+                &render_pass_begin_info,
+                vk::SubpassContents::INLINE,
+            );
+
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            device.cmd_set_viewport(command_buffer, 0, &viewports);
+            device.cmd_set_scissor(command_buffer, 0, &scissors);
+            device.cmd_draw(command_buffer, 3, 1, 0, 0);
+
+            device.cmd_end_render_pass(command_buffer);
+        };
+
+        unsafe { device.end_command_buffer(command_buffer) }
+            .expect("Failed to end recording command buffer");
     }
 
     fn create_render_pass(
@@ -707,12 +785,14 @@ impl Drop for VulkanState {
             for image_view in &self.swapchain_image_views {
                 self.device.destroy_image_view(*image_view, None);
             }
-            self.swapchain_device.destroy_swapchain(self.swapchain_khr, None);
+            self.swapchain_device
+                .destroy_swapchain(self.swapchain_khr, None);
             self.device.destroy_device(None);
             if let Some((instance, messenger)) = self.debug_utils_instance_messenger.take() {
                 instance.destroy_debug_utils_messenger(messenger, None);
             }
-            self.surface_instance.destroy_surface(self.surface_khr, None);
+            self.surface_instance
+                .destroy_surface(self.surface_khr, None);
             self.instance.destroy_instance(None)
         };
     }
