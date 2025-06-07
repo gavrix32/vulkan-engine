@@ -13,13 +13,14 @@ pub struct VulkanState {
     instance: ash::Instance,
     debug_utils_instance_messenger:
         Option<(ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
-    surface: khr::surface::Instance,
+    surface_instance: khr::surface::Instance,
     surface_khr: vk::SurfaceKHR,
     _adapter: vk::PhysicalDevice,
+    _queue_family_indices: QueueFamilyIndices,
     device: ash::Device,
     _graphics_queue: vk::Queue,
     _present_queue: vk::Queue,
-    swapchain: khr::swapchain::Device,
+    swapchain_device: khr::swapchain::Device,
     swapchain_khr: vk::SwapchainKHR,
     _swapchain_images: Vec<vk::Image>,
     _swapchain_image_format: vk::Format,
@@ -29,6 +30,7 @@ pub struct VulkanState {
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
+    command_pool: vk::CommandPool,
 }
 
 impl VulkanState {
@@ -54,15 +56,16 @@ impl VulkanState {
         let (surface, surface_khr) =
             Self::create_surface(&entry, &instance, display_handle, window_handle);
 
-        let adapter = Self::pick_adapter(&instance, &surface, surface_khr);
+        let (adapter, queue_family_indices) = Self::pick_adapter(&instance, &surface, surface_khr);
         let (device, graphics_queue, present_queue) =
-            Self::create_device(&instance, adapter, &surface, surface_khr);
+            Self::create_device(&instance, adapter, &queue_family_indices);
 
         let (swapchain, swapchain_khr, swapchain_images, swapchain_image_format, swapchain_extent) =
             Self::create_swapchain(
                 &instance,
                 adapter,
                 &device,
+                &queue_family_indices,
                 &surface,
                 surface_khr,
                 width,
@@ -84,17 +87,20 @@ impl VulkanState {
             swapchain_extent,
         );
 
+        let command_pool = Self::create_command_pool(&device, &queue_family_indices);
+
         Self {
             _entry: entry,
             instance,
             debug_utils_instance_messenger,
-            surface,
+            surface_instance: surface,
             surface_khr,
             _adapter: adapter,
+            _queue_family_indices: queue_family_indices,
             device,
             _graphics_queue: graphics_queue,
             _present_queue: present_queue,
-            swapchain,
+            swapchain_device: swapchain,
             swapchain_khr,
             _swapchain_images: swapchain_images,
             _swapchain_image_format: swapchain_image_format,
@@ -104,6 +110,7 @@ impl VulkanState {
             pipeline_layout,
             pipeline,
             swapchain_framebuffers,
+            command_pool,
         }
     }
 
@@ -189,7 +196,7 @@ impl VulkanState {
         instance: &ash::Instance,
         surface: &khr::surface::Instance,
         surface_khr: vk::SurfaceKHR,
-    ) -> vk::PhysicalDevice {
+    ) -> (vk::PhysicalDevice, QueueFamilyIndices) {
         let adapters = unsafe { instance.enumerate_physical_devices() }
             .expect("Failed to enumerate physical devices");
         if adapters.len() == 0 {
@@ -197,8 +204,9 @@ impl VulkanState {
         }
 
         for adapter in adapters {
-            if Self::is_adapter_suitable(instance, adapter, surface, surface_khr) {
-                return adapter;
+            let (adapter_suitable, queue_family_indices) = Self::is_adapter_suitable(instance, adapter, surface, surface_khr);
+            if adapter_suitable {
+                return (adapter, queue_family_indices);
             }
         }
         panic!("Failed to find a suitable GPU");
@@ -209,7 +217,7 @@ impl VulkanState {
         adapter: vk::PhysicalDevice,
         surface: &khr::surface::Instance,
         surface_khr: vk::SurfaceKHR,
-    ) -> bool {
+    ) -> (bool, QueueFamilyIndices) {
         let indices =
             QueueFamilyIndices::find_queue_families(instance, adapter, surface, surface_khr);
         let extensions_supported = Self::check_adapter_extensions_support(instance, adapter);
@@ -220,7 +228,7 @@ impl VulkanState {
             swapchain_adequate = !swapchain_support.formats.is_empty()
                 && !swapchain_support.present_modes.is_empty();
         }
-        indices.is_complete() && extensions_supported && swapchain_adequate
+        (indices.is_complete() && extensions_supported && swapchain_adequate, indices)
     }
 
     fn check_adapter_extensions_support(
@@ -241,18 +249,14 @@ impl VulkanState {
     fn create_device(
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
-        surface: &khr::surface::Instance,
-        surface_khr: vk::SurfaceKHR,
+        queue_family_indices: &QueueFamilyIndices,
     ) -> (ash::Device, vk::Queue, vk::Queue) {
-        let indices =
-            QueueFamilyIndices::find_queue_families(instance, adapter, surface, surface_khr);
-
         let queue_priority = 1.0f32;
         let queue_priorities = [queue_priority];
 
         let mut unique_queue_families = HashSet::new();
-        unique_queue_families.insert(indices.graphics_family.unwrap());
-        unique_queue_families.insert(indices.present_family.unwrap());
+        unique_queue_families.insert(queue_family_indices.graphics_family.unwrap());
+        unique_queue_families.insert(queue_family_indices.present_family.unwrap());
 
         let mut queue_create_infos = Vec::new();
 
@@ -274,8 +278,8 @@ impl VulkanState {
             .expect("Failed to create device");
 
         let graphics_queue =
-            unsafe { device.get_device_queue(indices.graphics_family.unwrap(), 0) };
-        let present_queue = unsafe { device.get_device_queue(indices.present_family.unwrap(), 0) };
+            unsafe { device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0) };
+        let present_queue = unsafe { device.get_device_queue(queue_family_indices.present_family.unwrap(), 0) };
 
         (device, graphics_queue, present_queue)
     }
@@ -284,6 +288,7 @@ impl VulkanState {
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
         device: &ash::Device,
+        queue_family_indices: &QueueFamilyIndices,
         surface: &khr::surface::Instance,
         surface_khr: vk::SurfaceKHR,
         width: u32,
@@ -323,18 +328,16 @@ impl VulkanState {
             .clipped(true)
             .old_swapchain(vk::SwapchainKHR::null());
 
-        let indices =
-            QueueFamilyIndices::find_queue_families(instance, adapter, surface, surface_khr);
-        let queue_family_indices = [
-            indices.graphics_family.unwrap(),
-            indices.present_family.unwrap(),
+        let indices = [
+            queue_family_indices.graphics_family.unwrap(),
+            queue_family_indices.present_family.unwrap(),
         ];
 
-        if indices.graphics_family != indices.present_family {
+        if queue_family_indices.graphics_family != queue_family_indices.present_family {
             swapchain_create_info =
                 swapchain_create_info.image_sharing_mode(vk::SharingMode::CONCURRENT);
             swapchain_create_info =
-                swapchain_create_info.queue_family_indices(&queue_family_indices);
+                swapchain_create_info.queue_family_indices(&indices);
         } else {
             swapchain_create_info =
                 swapchain_create_info.image_sharing_mode(vk::SharingMode::EXCLUSIVE);
@@ -523,6 +526,14 @@ impl VulkanState {
         framebuffers
     }
 
+    fn create_command_pool(device: &ash::Device, queue_family_indices: &QueueFamilyIndices) -> vk::CommandPool {
+        let command_pool_create_info = vk::CommandPoolCreateInfo::default()
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(queue_family_indices.graphics_family.unwrap());
+
+        unsafe { device.create_command_pool(&command_pool_create_info, None) }.expect("Failed to create command pool")
+    }
+
     fn create_render_pass(
         device: &ash::Device,
         swapchain_image_format: vk::Format,
@@ -685,6 +696,7 @@ impl SwapchainSupportDetails {
 impl Drop for VulkanState {
     fn drop(&mut self) {
         unsafe {
+            self.device.destroy_command_pool(self.command_pool, None);
             for framebuffer in &self.swapchain_framebuffers {
                 self.device.destroy_framebuffer(*framebuffer, None);
             }
@@ -695,12 +707,12 @@ impl Drop for VulkanState {
             for image_view in &self.swapchain_image_views {
                 self.device.destroy_image_view(*image_view, None);
             }
-            self.swapchain.destroy_swapchain(self.swapchain_khr, None);
+            self.swapchain_device.destroy_swapchain(self.swapchain_khr, None);
             self.device.destroy_device(None);
             if let Some((instance, messenger)) = self.debug_utils_instance_messenger.take() {
                 instance.destroy_debug_utils_messenger(messenger, None);
             }
-            self.surface.destroy_surface(self.surface_khr, None);
+            self.surface_instance.destroy_surface(self.surface_khr, None);
             self.instance.destroy_instance(None)
         };
     }
