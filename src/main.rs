@@ -3,7 +3,8 @@ mod vulkan_state;
 
 use crate::vulkan_state::VulkanState;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use std::time::Duration;
+use std::ops::Add;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -12,7 +13,7 @@ use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 const WIDTH: u32 = 800;
-const HEIGHT: u32 = 800;
+const HEIGHT: u32 = 600;
 
 #[derive(Default)]
 struct App {
@@ -45,16 +46,12 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let window = match self.window.as_ref() {
-            Some(window) => window,
-            None => return,
-        };
-
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
-                window.pre_present_notify();
-                // TODO! render and present
+                if let Some(state) = &self.state {
+                    state.draw_frame();
+                }
             }
             _ => (),
         }
@@ -67,25 +64,30 @@ fn main() {
     let mut event_loop = EventLoop::new().unwrap();
     let mut app = App::default();
 
-    // let mut last_time = Instant::now();
+    let mut last_time = Instant::now();
+    let mut elapsed_time = Duration::default();
 
     loop {
-        // let now = Instant::now();
-        // let delta_time = now.duration_since(last_time);
-        // last_time = now;
+        let now = Instant::now();
+        let delta_time = now.duration_since(last_time);
+        last_time = now;
+        elapsed_time = elapsed_time.add(delta_time);
 
         let status = event_loop.pump_app_events(Some(Duration::ZERO), &mut app);
 
         if let PumpStatus::Exit(_) = status {
             break;
         }
-
         if let Some(window) = &app.window {
             window.request_redraw();
         }
 
-        // let fps = 1.0 / delta_time.as_secs_f64();
-        // println!("{} FPS", fps);
-        break;
+        if elapsed_time.as_secs() >= 1 {
+            let delta_time_secs = delta_time.as_secs_f64();
+            let fps = (1.0 / delta_time_secs) as u32;
+            println!("{} fps ({:.2} ms)", fps, delta_time_secs * 1000.0);
+
+            elapsed_time = Duration::ZERO;
+        }
     }
 }

@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::ffi::{CStr, c_char};
 
 const ADAPTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
+const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 
 pub struct VulkanState {
     _entry: ash::Entry,
@@ -18,13 +19,13 @@ pub struct VulkanState {
     _adapter: vk::PhysicalDevice,
     _queue_family_indices: QueueFamilyIndices,
     device: ash::Device,
-    _graphics_queue: vk::Queue,
-    _present_queue: vk::Queue,
+    graphics_queue: vk::Queue,
+    present_queue: vk::Queue,
     swapchain_device: khr::swapchain::Device,
     swapchain_khr: vk::SwapchainKHR,
     _swapchain_images: Vec<vk::Image>,
     _swapchain_image_format: vk::Format,
-    _swapchain_extent: vk::Extent2D,
+    swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
@@ -32,6 +33,9 @@ pub struct VulkanState {
     swapchain_framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffer: vk::CommandBuffer,
+    image_available_semaphore: vk::Semaphore,
+    render_finished_semaphore: vk::Semaphore,
+    in_flight_fence: vk::Fence,
 }
 
 impl VulkanState {
@@ -78,8 +82,7 @@ impl VulkanState {
 
         let render_pass = Self::create_render_pass(&device, swapchain_image_format);
 
-        let (pipeline_layout, pipeline) =
-            Self::create_graphics_pipeline(&device, swapchain_extent, render_pass);
+        let (pipeline_layout, pipeline) = Self::create_graphics_pipeline(&device, render_pass);
 
         let swapchain_framebuffers = Self::create_framebuffers(
             &device,
@@ -89,8 +92,11 @@ impl VulkanState {
         );
 
         let command_pool = Self::create_command_pool(&device, &queue_family_indices);
-        
+
         let command_buffer = Self::create_command_buffer(&device, command_pool);
+
+        let (image_available_semaphore, render_finished_semaphore, in_flight_fence) =
+            Self::create_sync_objects(&device);
 
         Self {
             _entry: entry,
@@ -101,13 +107,13 @@ impl VulkanState {
             _adapter: adapter,
             _queue_family_indices: queue_family_indices,
             device,
-            _graphics_queue: graphics_queue,
-            _present_queue: present_queue,
+            graphics_queue,
+            present_queue,
             swapchain_device: swapchain,
             swapchain_khr,
             _swapchain_images: swapchain_images,
             _swapchain_image_format: swapchain_image_format,
-            _swapchain_extent: swapchain_extent,
+            swapchain_extent,
             swapchain_image_views,
             render_pass,
             pipeline_layout,
@@ -115,6 +121,9 @@ impl VulkanState {
             swapchain_framebuffers,
             command_pool,
             command_buffer,
+            image_available_semaphore,
+            render_finished_semaphore,
+            in_flight_fence,
         }
     }
 
@@ -403,7 +412,6 @@ impl VulkanState {
 
     fn create_graphics_pipeline(
         device: &ash::Device,
-        swapchain_extent: vk::Extent2D,
         render_pass: vk::RenderPass,
     ) -> (vk::PipelineLayout, vk::Pipeline) {
         let mut vertex_shader_file = std::fs::File::open("src/shaders/spirv/vertex.spv")
@@ -509,8 +517,9 @@ impl VulkanState {
         render_pass: vk::RenderPass,
         swapchain_extent: vk::Extent2D,
     ) -> Vec<vk::Framebuffer> {
-        let mut framebuffers = Vec::with_capacity(swapchain_image_views.len());
-        for i in 0..framebuffers.len() {
+        let mut framebuffers = Vec::new();
+
+        for i in 0..swapchain_image_views.len() {
             let attachments = [swapchain_image_views[i]];
             let framebuffer_create_info = vk::FramebufferCreateInfo::default()
                 .render_pass(render_pass)
@@ -519,8 +528,10 @@ impl VulkanState {
                 .height(swapchain_extent.height)
                 .layers(1);
 
-            framebuffers[i] = unsafe { device.create_framebuffer(&framebuffer_create_info, None) }
+            let framebuffer = unsafe { device.create_framebuffer(&framebuffer_create_info, None) }
                 .expect("Failed to create framebuffer");
+
+            framebuffers.push(framebuffer);
         }
         framebuffers
     }
@@ -550,7 +561,7 @@ impl VulkanState {
     }
 
     fn record_command_buffer(
-        device: ash::Device,
+        device: &ash::Device,
         command_buffer: vk::CommandBuffer,
         render_pass: vk::RenderPass,
         framebuffer: vk::Framebuffer,
@@ -637,9 +648,19 @@ impl VulkanState {
             .color_attachments(&color_attachment_references);
         let subpass_descriptions = [subpass_description];
 
+        let subpass_dependency = vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+        let subpass_dependencies = [subpass_dependency];
+
         let render_pass_create_info = vk::RenderPassCreateInfo::default()
             .attachments(&color_attachment_descriptions)
-            .subpasses(&subpass_descriptions);
+            .subpasses(&subpass_descriptions)
+            .dependencies(&subpass_dependencies);
 
         unsafe { device.create_render_pass(&render_pass_create_info, None) }
             .expect("Failed to create render pass")
@@ -690,6 +711,89 @@ impl VulkanState {
         );
 
         actual_extent
+    }
+
+    fn create_sync_objects(device: &ash::Device) -> (vk::Semaphore, vk::Semaphore, vk::Fence) {
+        let semaphore_create_info = vk::SemaphoreCreateInfo::default();
+        let fence_create_info =
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+
+        (
+            unsafe { device.create_semaphore(&semaphore_create_info, None) }
+                .expect("Failed to create image available semaphore"),
+            unsafe { device.create_semaphore(&semaphore_create_info, None) }
+                .expect("Failed to create render finished semaphore"),
+            unsafe { device.create_fence(&fence_create_info, None) }
+                .expect("Failed to create in flight fence"),
+        )
+    }
+
+    pub fn draw_frame(&self) {
+        unsafe {
+            self.device
+                .wait_for_fences(&[self.in_flight_fence], true, u64::MAX)
+        }
+        .unwrap();
+
+        unsafe { self.device.reset_fences(&[self.in_flight_fence]) }.unwrap();
+
+        let (image_index, _) = unsafe {
+            self.swapchain_device.acquire_next_image(
+                self.swapchain_khr,
+                u64::MAX,
+                self.image_available_semaphore,
+                vk::Fence::null(),
+            )
+        }
+        .unwrap();
+
+        unsafe {
+            self.device
+                .reset_command_buffer(self.command_buffer, vk::CommandBufferResetFlags::empty())
+        }
+        .unwrap();
+
+        Self::record_command_buffer(
+            &self.device,
+            self.command_buffer,
+            self.render_pass,
+            self.swapchain_framebuffers[image_index as usize],
+            self.swapchain_extent,
+            self.pipeline,
+        );
+
+        let wait_semaphores = [self.image_available_semaphore];
+        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let signal_semaphores = [self.render_finished_semaphore];
+
+        let command_buffers = [self.command_buffer];
+
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_semaphores);
+        let submit_infos = [submit_info];
+
+        unsafe {
+            self.device
+                .queue_submit(self.graphics_queue, &submit_infos, self.in_flight_fence)
+        }
+        .unwrap();
+
+        let swapchains = [self.swapchain_khr];
+        let image_indices = [image_index];
+
+        let present_info_khr = vk::PresentInfoKHR::default()
+            .wait_semaphores(&signal_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+
+        unsafe {
+            self.swapchain_device
+                .queue_present(self.present_queue, &present_info_khr)
+        }
+        .unwrap();
     }
 }
 
@@ -774,6 +878,12 @@ impl SwapchainSupportDetails {
 impl Drop for VulkanState {
     fn drop(&mut self) {
         unsafe {
+            self.device.device_wait_idle().unwrap();
+            self.device
+                .destroy_semaphore(self.image_available_semaphore, None);
+            self.device
+                .destroy_semaphore(self.render_finished_semaphore, None);
+            self.device.destroy_fence(self.in_flight_fence, None);
             self.device.destroy_command_pool(self.command_pool, None);
             for framebuffer in &self.swapchain_framebuffers {
                 self.device.destroy_framebuffer(*framebuffer, None);

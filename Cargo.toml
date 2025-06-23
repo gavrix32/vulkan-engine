@@ -10,3 +10,20 @@ env_logger = "0.11.8"
 log = "0.4.27"
 raw-window-handle = "0.6.2"
 winit = "0.30.11"
+
+#[profile.release]
+#lto = true
+#codegen-units = 1
+#opt-level = "s"
+#strip = true
+
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+incremental = false
+strip = "symbols"
