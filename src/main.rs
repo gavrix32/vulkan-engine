@@ -49,7 +49,7 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
-                if let Some(state) = &self.state {
+                if let Some(state) = &mut self.state {
                     state.draw_frame();
                 }
             }
