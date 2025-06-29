@@ -734,20 +734,20 @@ impl VulkanState {
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             image_available_semaphores.push(
                 unsafe { device.create_semaphore(&semaphore_create_info, None) }
-                    .expect("Failed to create image available semaphore")
+                    .expect("Failed to create image available semaphore"),
             );
             in_flight_fences.push(
                 unsafe { device.create_fence(&fence_create_info, None) }
-                    .expect("Failed to create in flight fence")
+                    .expect("Failed to create in flight fence"),
             );
         }
         for _ in 0..swapchain_image_count {
             render_finished_semaphores.push(
                 unsafe { device.create_semaphore(&semaphore_create_info, None) }
-                    .expect("Failed to create render finished semaphore")
+                    .expect("Failed to create render finished semaphore"),
             );
         }
-        
+
         (
             image_available_semaphores,
             render_finished_semaphores,
@@ -757,12 +757,19 @@ impl VulkanState {
 
     pub fn draw_frame(&mut self) {
         unsafe {
-            self.device
-                .wait_for_fences(&[self.in_flight_fences[self.current_frame]], true, u64::MAX)
+            self.device.wait_for_fences(
+                &[self.in_flight_fences[self.current_frame]],
+                true,
+                u64::MAX,
+            )
         }
         .unwrap();
 
-        unsafe { self.device.reset_fences(&[self.in_flight_fences[self.current_frame]]) }.unwrap();
+        unsafe {
+            self.device
+                .reset_fences(&[self.in_flight_fences[self.current_frame]])
+        }
+        .unwrap();
 
         let (image_index, _) = unsafe {
             self.swapchain_device.acquire_next_image(
@@ -775,8 +782,10 @@ impl VulkanState {
         .unwrap();
 
         unsafe {
-            self.device
-                .reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty())
+            self.device.reset_command_buffer(
+                self.command_buffers[self.current_frame],
+                vk::CommandBufferResetFlags::empty(),
+            )
         }
         .unwrap();
 
@@ -802,8 +811,11 @@ impl VulkanState {
         let submit_infos = [submit_info];
 
         unsafe {
-            self.device
-                .queue_submit(self.graphics_queue, &submit_infos, self.in_flight_fences[self.current_frame])
+            self.device.queue_submit(
+                self.graphics_queue,
+                &submit_infos,
+                self.in_flight_fences[self.current_frame],
+            )
         }
         .unwrap();
 
@@ -820,7 +832,7 @@ impl VulkanState {
                 .queue_present(self.present_queue, &present_info_khr)
         }
         .unwrap();
-        
+
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 }
@@ -911,10 +923,10 @@ impl Drop for VulkanState {
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 self.device
                     .destroy_semaphore(self.image_available_semaphores[i], None);
-                
+
                 self.device.destroy_fence(self.in_flight_fences[i], None);
             }
-            
+
             for i in 0..self._swapchain_images.len() {
                 self.device
                     .destroy_semaphore(self.render_finished_semaphores[i], None);
