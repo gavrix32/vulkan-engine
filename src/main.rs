@@ -53,6 +53,13 @@ impl ApplicationHandler for App {
                     state.draw_frame();
                 }
             }
+            WindowEvent::Resized(resolution) => {
+                if let Some(state) = &mut self.state {
+                    state.framebuffer_resized = true;
+                    state.width = resolution.width;
+                    state.height = resolution.height;
+                }
+            }
             _ => (),
         }
     }

@@ -2,6 +2,7 @@ use crate::debug;
 use ash::ext;
 use ash::khr;
 use ash::vk;
+use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::collections::HashSet;
 use std::ffi::{CStr, c_char};
@@ -16,15 +17,15 @@ pub struct VulkanState {
         Option<(ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
     surface_instance: khr::surface::Instance,
     surface_khr: vk::SurfaceKHR,
-    _adapter: vk::PhysicalDevice,
-    _queue_family_indices: QueueFamilyIndices,
+    adapter: vk::PhysicalDevice,
+    queue_family_indices: QueueFamilyIndices,
     device: ash::Device,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
     swapchain_device: khr::swapchain::Device,
     swapchain_khr: vk::SwapchainKHR,
-    _swapchain_images: Vec<vk::Image>,
-    _swapchain_image_format: vk::Format,
+    swapchain_images: Vec<vk::Image>,
+    swapchain_image_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
     render_pass: vk::RenderPass,
@@ -37,6 +38,9 @@ pub struct VulkanState {
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
     current_frame: usize,
+    pub framebuffer_resized: bool,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl VulkanState {
@@ -105,15 +109,15 @@ impl VulkanState {
             debug_utils_instance_messenger,
             surface_instance: surface,
             surface_khr,
-            _adapter: adapter,
-            _queue_family_indices: queue_family_indices,
+            adapter,
+            queue_family_indices,
             device,
             graphics_queue,
             present_queue,
             swapchain_device: swapchain,
             swapchain_khr,
-            _swapchain_images: swapchain_images,
-            _swapchain_image_format: swapchain_image_format,
+            swapchain_images,
+            swapchain_image_format,
             swapchain_extent,
             swapchain_image_views,
             render_pass,
@@ -126,6 +130,9 @@ impl VulkanState {
             render_finished_semaphores,
             in_flight_fences,
             current_frame: 0,
+            framebuffer_resized: false,
+            width,
+            height,
         }
     }
 
@@ -755,6 +762,55 @@ impl VulkanState {
         )
     }
 
+    fn cleanup_swapchain(&self) {
+        for framebuffer in &self.swapchain_framebuffers {
+            unsafe { self.device.destroy_framebuffer(*framebuffer, None) };
+        }
+        for image_view in &self.swapchain_image_views {
+            unsafe { self.device.destroy_image_view(*image_view, None) };
+        }
+        unsafe {
+            self.swapchain_device
+                .destroy_swapchain(self.swapchain_khr, None)
+        };
+    }
+
+    fn recreate_swapchain(&mut self) {
+        unsafe { self.device.device_wait_idle() }.unwrap();
+
+        self.cleanup_swapchain();
+
+        (
+            self.swapchain_device,
+            self.swapchain_khr,
+            self.swapchain_images,
+            self.swapchain_image_format,
+            self.swapchain_extent,
+        ) = Self::create_swapchain(
+            &self.instance,
+            self.adapter,
+            &self.device,
+            &self.queue_family_indices,
+            &self.surface_instance,
+            self.surface_khr,
+            self.width,
+            self.height,
+        );
+
+        self.swapchain_image_views = Self::create_image_views(
+            &self.swapchain_images,
+            &self.swapchain_image_format,
+            &self.device,
+        );
+
+        self.swapchain_framebuffers = Self::create_framebuffers(
+            &self.device,
+            &self.swapchain_image_views,
+            self.render_pass,
+            self.swapchain_extent,
+        );
+    }
+
     pub fn draw_frame(&mut self) {
         unsafe {
             self.device.wait_for_fences(
@@ -765,19 +821,39 @@ impl VulkanState {
         }
         .unwrap();
 
-        unsafe {
-            self.device
-                .reset_fences(&[self.in_flight_fences[self.current_frame]])
-        }
-        .unwrap();
-
-        let (image_index, _) = unsafe {
+        let acquire_result = unsafe {
             self.swapchain_device.acquire_next_image(
                 self.swapchain_khr,
                 u64::MAX,
                 self.image_available_semaphores[self.current_frame],
                 vk::Fence::null(),
             )
+        };
+
+        let image_index: u32;
+
+        match acquire_result {
+            Ok((index, is_suboptimal)) => {
+                if is_suboptimal {
+                    warn!("Swapchain is suboptimal, recreating...");
+                    self.recreate_swapchain();
+                    return;
+                }
+                image_index = index;
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                warn!("Swapchain is out of date, recreating...");
+                self.recreate_swapchain();
+                return;
+            }
+            Err(e) => {
+                panic!("Failed to acquire next image: {:?}", e);
+            }
+        }
+
+        unsafe {
+            self.device
+                .reset_fences(&[self.in_flight_fences[self.current_frame]])
         }
         .unwrap();
 
@@ -827,11 +903,31 @@ impl VulkanState {
             .swapchains(&swapchains)
             .image_indices(&image_indices);
 
-        unsafe {
+        let present_result = unsafe {
             self.swapchain_device
                 .queue_present(self.present_queue, &present_info_khr)
+        };
+
+        match present_result {
+            Ok(is_suboptimal) => {
+                if is_suboptimal {
+                    warn!("Swapchain is suboptimal, recreating...");
+                    self.recreate_swapchain();
+                }
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                warn!("Swapchain is out of date, recreating...");
+                self.recreate_swapchain();
+            }
+            Err(e) => {
+                panic!("Failed to present swapchain image: {:?}", e);
+            }
         }
-        .unwrap();
+
+        if self.framebuffer_resized {
+            self.framebuffer_resized = false;
+            self.recreate_swapchain();
+        }
 
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
@@ -920,6 +1016,14 @@ impl Drop for VulkanState {
         unsafe {
             self.device.device_wait_idle().unwrap();
 
+            self.cleanup_swapchain();
+
+            self.device.destroy_pipeline(self.pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+
+            self.device.destroy_render_pass(self.render_pass, None);
+
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 self.device
                     .destroy_semaphore(self.image_available_semaphores[i], None);
@@ -927,28 +1031,13 @@ impl Drop for VulkanState {
                 self.device.destroy_fence(self.in_flight_fences[i], None);
             }
 
-            for i in 0..self._swapchain_images.len() {
+            for i in 0..self.swapchain_images.len() {
                 self.device
                     .destroy_semaphore(self.render_finished_semaphores[i], None);
             }
 
             self.device.destroy_command_pool(self.command_pool, None);
 
-            for framebuffer in &self.swapchain_framebuffers {
-                self.device.destroy_framebuffer(*framebuffer, None);
-            }
-
-            self.device.destroy_pipeline(self.pipeline, None);
-            self.device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
-            self.device.destroy_render_pass(self.render_pass, None);
-
-            for image_view in &self.swapchain_image_views {
-                self.device.destroy_image_view(*image_view, None);
-            }
-
-            self.swapchain_device
-                .destroy_swapchain(self.swapchain_khr, None);
             self.device.destroy_device(None);
 
             if let Some((instance, messenger)) = self.debug_utils_instance_messenger.take() {
