@@ -1,46 +1,96 @@
 use crate::debug;
 use ash::ext;
 use ash::khr;
+use ash::util::Align;
 use ash::vk;
+use ash::vk::DeviceSize;
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::collections::HashSet;
 use std::ffi::{CStr, c_char};
+use std::mem::offset_of;
 
 const ADAPTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
+#[derive(Debug, Copy, Clone)]
+struct Vertex {
+    position: [f32; 2],
+    color:    [f32; 3],
+}
+
+impl Vertex {
+    fn get_binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(size_of::<Vertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+    }
+
+    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        [
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(0)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(Vertex, position) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(1)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(offset_of!(Vertex, color) as u32),
+        ]
+    }
+}
+
+const VERTICES: [Vertex; 3] = [
+    Vertex {
+        position: [0.0, -0.5],
+        color:    [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, 0.5],
+        color:    [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [-0.5, 0.5],
+        color:    [0.0, 0.0, 1.0],
+    },
+];
+
 pub struct VulkanState {
-    _entry: ash::Entry,
-    instance: ash::Instance,
-    debug_utils_instance_messenger:
-        Option<(ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
-    surface_instance: khr::surface::Instance,
-    surface_khr: vk::SurfaceKHR,
-    adapter: vk::PhysicalDevice,
-    queue_family_indices: QueueFamilyIndices,
-    device: ash::Device,
-    graphics_queue: vk::Queue,
-    present_queue: vk::Queue,
-    swapchain_device: khr::swapchain::Device,
-    swapchain_khr: vk::SwapchainKHR,
-    swapchain_images: Vec<vk::Image>,
-    swapchain_image_format: vk::Format,
-    swapchain_extent: vk::Extent2D,
-    swapchain_image_views: Vec<vk::ImageView>,
-    render_pass: vk::RenderPass,
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-    swapchain_framebuffers: Vec<vk::Framebuffer>,
-    command_pool: vk::CommandPool,
-    command_buffers: Vec<vk::CommandBuffer>,
+    _entry:                     ash::Entry,
+    instance:                   ash::Instance,
+    debug_messenger:            Option<(ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
+    surface_instance:           khr::surface::Instance,
+    surface_khr:                vk::SurfaceKHR,
+    adapter:                    vk::PhysicalDevice,
+    queue_family_indices:       QueueFamilyIndices,
+    device:                     ash::Device,
+    graphics_queue:             vk::Queue,
+    present_queue:              vk::Queue,
+    swapchain_device:           khr::swapchain::Device,
+    swapchain_khr:              vk::SwapchainKHR,
+    swapchain_images:           Vec<vk::Image>,
+    swapchain_image_format:     vk::Format,
+    swapchain_extent:           vk::Extent2D,
+    swapchain_image_views:      Vec<vk::ImageView>,
+    render_pass:                vk::RenderPass,
+    pipeline_layout:            vk::PipelineLayout,
+    pipeline:                   vk::Pipeline,
+    swapchain_framebuffers:     Vec<vk::Framebuffer>,
+    command_pool:               vk::CommandPool,
+    vertex_buffer:              vk::Buffer,
+    vertex_buffer_memory:       vk::DeviceMemory,
+    command_buffers:            Vec<vk::CommandBuffer>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
-    in_flight_fences: Vec<vk::Fence>,
-    current_frame: usize,
+    in_flight_fences:           Vec<vk::Fence>,
+    current_frame:              usize,
+
     pub framebuffer_resized: bool,
-    pub width: u32,
-    pub height: u32,
+    pub width:               u32,
+    pub height:              u32,
 }
 
 impl VulkanState {
@@ -60,27 +110,33 @@ impl VulkanState {
             &mut debug_utils_messenger_create_info,
         );
 
-        let debug_utils_instance_messenger =
+        let debug_messenger =
             debug::setup_debug_messenger(&entry, &instance, &debug_utils_messenger_create_info);
 
-        let (surface, surface_khr) =
+        let (surface_instance, surface_khr) =
             Self::create_surface(&entry, &instance, display_handle, window_handle);
 
-        let (adapter, queue_family_indices) = Self::pick_adapter(&instance, &surface, surface_khr);
+        let (adapter, queue_family_indices) =
+            Self::pick_adapter(&instance, &surface_instance, surface_khr);
         let (device, graphics_queue, present_queue) =
             Self::create_device(&instance, adapter, &queue_family_indices);
 
-        let (swapchain, swapchain_khr, swapchain_images, swapchain_image_format, swapchain_extent) =
-            Self::create_swapchain(
-                &instance,
-                adapter,
-                &device,
-                &queue_family_indices,
-                &surface,
-                surface_khr,
-                width,
-                height,
-            );
+        let (
+            swapchain_device,
+            swapchain_khr,
+            swapchain_images,
+            swapchain_image_format,
+            swapchain_extent,
+        ) = Self::create_swapchain(
+            &instance,
+            adapter,
+            &device,
+            &queue_family_indices,
+            &surface_instance,
+            surface_khr,
+            width,
+            height,
+        );
 
         let swapchain_image_views =
             Self::create_image_views(&swapchain_images, &swapchain_image_format, &device);
@@ -98,6 +154,9 @@ impl VulkanState {
 
         let command_pool = Self::create_command_pool(&device, &queue_family_indices);
 
+        let (vertex_buffer, vertex_buffer_memory) =
+            Self::create_vertex_buffer(&instance, adapter, &device);
+
         let command_buffers = Self::create_command_buffers(&device, command_pool);
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -106,15 +165,15 @@ impl VulkanState {
         Self {
             _entry: entry,
             instance,
-            debug_utils_instance_messenger,
-            surface_instance: surface,
+            debug_messenger,
+            surface_instance,
             surface_khr,
             adapter,
             queue_family_indices,
             device,
             graphics_queue,
             present_queue,
-            swapchain_device: swapchain,
+            swapchain_device,
             swapchain_khr,
             swapchain_images,
             swapchain_image_format,
@@ -125,11 +184,14 @@ impl VulkanState {
             pipeline,
             swapchain_framebuffers,
             command_pool,
+            vertex_buffer,
+            vertex_buffer_memory,
             command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
             current_frame: 0,
+
             framebuffer_resized: false,
             width,
             height,
@@ -447,7 +509,12 @@ impl VulkanState {
 
         let shader_stage_create_infos = [vertex_shader_stage_info, fragment_shader_stage_info];
 
-        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default();
+        let binding_descriptions = [Vertex::get_binding_description()];
+        let attribute_descriptions = Vertex::get_attribute_descriptions();
+
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&binding_descriptions)
+            .vertex_attribute_descriptions(&attribute_descriptions);
 
         let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -557,6 +624,79 @@ impl VulkanState {
             .expect("Failed to create command pool")
     }
 
+    fn create_vertex_buffer(
+        instance: &ash::Instance,
+        adapter: vk::PhysicalDevice,
+        device: &ash::Device,
+    ) -> (vk::Buffer, vk::DeviceMemory) {
+        let buffer_create_info = vk::BufferCreateInfo::default()
+            .size((size_of::<Vertex>() * VERTICES.len()) as DeviceSize)
+            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let vertex_buffer = unsafe { device.create_buffer(&buffer_create_info, None) }
+            .expect("Failed to create vertex buffer");
+
+        let memory_requirements = unsafe { device.get_buffer_memory_requirements(vertex_buffer) };
+
+        let memory_allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(memory_requirements.size)
+            .memory_type_index(Self::find_memory_type(
+                instance,
+                adapter,
+                memory_requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            ));
+
+        let vertex_buffer_memory = unsafe { device.allocate_memory(&memory_allocate_info, None) }
+            .expect("Failed to allocate vertex buffer memory");
+
+        unsafe { device.bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0) }
+            .expect("Failed to bind vertex buffer memory");
+
+        let data_ptr = unsafe {
+            device.map_memory(
+                vertex_buffer_memory,
+                0,
+                buffer_create_info.size,
+                vk::MemoryMapFlags::empty(),
+            )
+        }
+        .expect("Failed to map vertex buffer memory");
+
+        let mut vertex_align = unsafe {
+            Align::new(
+                data_ptr,
+                align_of::<Vertex>() as DeviceSize,
+                memory_requirements.size,
+            )
+        };
+        vertex_align.copy_from_slice(&VERTICES);
+
+        unsafe { device.unmap_memory(vertex_buffer_memory) };
+
+        (vertex_buffer, vertex_buffer_memory)
+    }
+
+    fn find_memory_type(
+        instance: &ash::Instance,
+        adapter: vk::PhysicalDevice,
+        type_filter: u32,
+        properties: vk::MemoryPropertyFlags,
+    ) -> u32 {
+        let memory_properties = unsafe { instance.get_physical_device_memory_properties(adapter) };
+
+        for i in 0..memory_properties.memory_type_count {
+            if (type_filter & (1 << i) != 0)
+                && memory_properties.memory_types[i as usize].property_flags & properties
+                    == properties
+            {
+                return i;
+            }
+        }
+        panic!("Failed to find suitable memory type");
+    }
+
     fn create_command_buffers(
         device: &ash::Device,
         command_pool: vk::CommandPool,
@@ -578,6 +718,7 @@ impl VulkanState {
         framebuffer: vk::Framebuffer,
         swapchain_extent: vk::Extent2D,
         pipeline: vk::Pipeline,
+        vertex_buffer: vk::Buffer,
     ) {
         let clear_color = vk::ClearValue {
             color: vk::ClearColorValue {
@@ -623,9 +764,13 @@ impl VulkanState {
             );
 
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+
             device.cmd_set_viewport(command_buffer, 0, &viewports);
             device.cmd_set_scissor(command_buffer, 0, &scissors);
-            device.cmd_draw(command_buffer, 3, 1, 0, 0);
+
+            device.cmd_bind_vertex_buffers(command_buffer, 0, &[vertex_buffer], &[0]);
+
+            device.cmd_draw(command_buffer, VERTICES.len() as u32, 1, 0, 0);
 
             device.cmd_end_render_pass(command_buffer);
         };
@@ -872,6 +1017,7 @@ impl VulkanState {
             self.swapchain_framebuffers[image_index as usize],
             self.swapchain_extent,
             self.pipeline,
+            self.vertex_buffer,
         );
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
@@ -935,7 +1081,7 @@ impl VulkanState {
 
 struct QueueFamilyIndices {
     graphics_family: Option<u32>,
-    present_family: Option<u32>,
+    present_family:  Option<u32>,
 }
 
 impl QueueFamilyIndices {
@@ -947,7 +1093,7 @@ impl QueueFamilyIndices {
     ) -> Self {
         let mut indices = Self {
             graphics_family: None,
-            present_family: None,
+            present_family:  None,
         };
 
         let queue_families =
@@ -974,7 +1120,7 @@ impl QueueFamilyIndices {
 
         Self {
             graphics_family: indices.graphics_family,
-            present_family: indices.present_family,
+            present_family:  indices.present_family,
         }
     }
 
@@ -984,8 +1130,8 @@ impl QueueFamilyIndices {
 }
 
 struct SwapchainSupportDetails {
-    capabilities: vk::SurfaceCapabilitiesKHR,
-    formats: Vec<vk::SurfaceFormatKHR>,
+    capabilities:  vk::SurfaceCapabilitiesKHR,
+    formats:       Vec<vk::SurfaceFormatKHR>,
     present_modes: Vec<vk::PresentModeKHR>,
 }
 
@@ -997,10 +1143,10 @@ impl SwapchainSupportDetails {
     ) -> Self {
         unsafe {
             Self {
-                capabilities: surface
+                capabilities:  surface
                     .get_physical_device_surface_capabilities(adapter, surface_khr)
                     .expect("Failed to get adapter surface capabilities"),
-                formats: surface
+                formats:       surface
                     .get_physical_device_surface_formats(adapter, surface_khr)
                     .expect("Failed to get adapter surface formats"),
                 present_modes: surface
@@ -1017,6 +1163,9 @@ impl Drop for VulkanState {
             self.device.device_wait_idle().unwrap();
 
             self.cleanup_swapchain();
+
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_buffer_memory, None);
 
             self.device.destroy_pipeline(self.pipeline, None);
             self.device
@@ -1040,7 +1189,7 @@ impl Drop for VulkanState {
 
             self.device.destroy_device(None);
 
-            if let Some((instance, messenger)) = self.debug_utils_instance_messenger.take() {
+            if let Some((instance, messenger)) = self.debug_messenger.take() {
                 instance.destroy_debug_utils_messenger(messenger, None);
             }
 
