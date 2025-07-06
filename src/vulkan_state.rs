@@ -42,20 +42,26 @@ impl Vertex {
     }
 }
 
-const VERTICES: [Vertex; 3] = [
+const VERTICES: [Vertex; 4] = [
     Vertex {
-        position: [0.0, -0.5],
+        position: [-0.5, -0.5],
         color: [1.0, 0.0, 0.0],
     },
     Vertex {
-        position: [0.5, 0.5],
+        position: [0.5, -0.5],
         color: [0.0, 1.0, 0.0],
     },
     Vertex {
-        position: [-0.5, 0.5],
+        position: [0.5, 0.5],
         color: [0.0, 0.0, 1.0],
     },
+    Vertex {
+        position: [-0.5, 0.5],
+        color: [1.0, 1.0, 1.0],
+    },
 ];
+
+const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 pub struct VulkanState {
     _entry: ash::Entry,
@@ -81,6 +87,8 @@ pub struct VulkanState {
     command_pool: vk::CommandPool,
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_buffer_memory: vk::DeviceMemory,
     command_buffers: Vec<vk::CommandBuffer>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
@@ -156,6 +164,9 @@ impl VulkanState {
         let (vertex_buffer, vertex_buffer_memory) =
             Self::create_vertex_buffer(&instance, adapter, &device, graphics_queue, command_pool);
 
+        let (index_buffer, index_buffer_memory) =
+            Self::create_index_buffer(&instance, adapter, &device, graphics_queue, command_pool);
+
         let command_buffers = Self::create_command_buffers(&device, command_pool);
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -185,6 +196,8 @@ impl VulkanState {
             command_pool,
             vertex_buffer,
             vertex_buffer_memory,
+            index_buffer,
+            index_buffer_memory,
             command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
@@ -757,6 +770,61 @@ impl VulkanState {
         (vertex_buffer, vertex_buffer_memory)
     }
 
+    fn create_index_buffer(
+        instance: &ash::Instance,
+        adapter: vk::PhysicalDevice,
+        device: &ash::Device,
+        graphics_queue: vk::Queue,
+        command_pool: vk::CommandPool,
+    ) -> (vk::Buffer, vk::DeviceMemory) {
+        let size = (size_of::<u16>() * INDICES.len()) as vk::DeviceSize;
+
+        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(
+            instance,
+            adapter,
+            device,
+            size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
+
+        let data_ptr = unsafe {
+            device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())
+        }
+        .expect("Failed to map staging buffer memory");
+
+        let mut vertex_align =
+            unsafe { Align::new(data_ptr, align_of::<u16>() as vk::DeviceSize, size) };
+        vertex_align.copy_from_slice(&INDICES);
+
+        unsafe { device.unmap_memory(staging_buffer_memory) };
+
+        let (index_buffer, index_buffer_memory) = Self::create_buffer(
+            instance,
+            adapter,
+            device,
+            size,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        );
+
+        Self::copy_buffer(
+            device,
+            graphics_queue,
+            staging_buffer,
+            index_buffer,
+            size,
+            command_pool,
+        );
+
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
+        }
+
+        (index_buffer, index_buffer_memory)
+    }
+
     fn find_memory_type(
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
@@ -798,6 +866,7 @@ impl VulkanState {
         swapchain_extent: vk::Extent2D,
         pipeline: vk::Pipeline,
         vertex_buffer: vk::Buffer,
+        index_buffer: vk::Buffer,
     ) {
         let clear_color = vk::ClearValue {
             color: vk::ClearColorValue {
@@ -848,8 +917,14 @@ impl VulkanState {
             device.cmd_set_scissor(command_buffer, 0, &scissors);
 
             device.cmd_bind_vertex_buffers(command_buffer, 0, &[vertex_buffer], &[0]);
+            device.cmd_bind_index_buffer(
+                command_buffer,
+                index_buffer,
+                vk::DeviceSize::default(),
+                vk::IndexType::UINT16,
+            );
 
-            device.cmd_draw(command_buffer, VERTICES.len() as u32, 1, 0, 0);
+            device.cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
 
             device.cmd_end_render_pass(command_buffer);
         };
@@ -1097,6 +1172,7 @@ impl VulkanState {
             self.swapchain_extent,
             self.pipeline,
             self.vertex_buffer,
+            self.index_buffer,
         );
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
@@ -1242,6 +1318,9 @@ impl Drop for VulkanState {
             self.device.device_wait_idle().unwrap();
 
             self.cleanup_swapchain();
+
+            self.device.destroy_buffer(self.index_buffer, None);
+            self.device.free_memory(self.index_buffer_memory, None);
 
             self.device.destroy_buffer(self.vertex_buffer, None);
             self.device.free_memory(self.vertex_buffer_memory, None);
