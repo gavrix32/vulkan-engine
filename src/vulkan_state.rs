@@ -3,7 +3,6 @@ use ash::ext;
 use ash::khr;
 use ash::util::Align;
 use ash::vk;
-use ash::vk::DeviceSize;
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::collections::HashSet;
@@ -16,7 +15,7 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 #[derive(Debug, Copy, Clone)]
 struct Vertex {
     position: [f32; 2],
-    color:    [f32; 3],
+    color: [f32; 3],
 }
 
 impl Vertex {
@@ -46,51 +45,51 @@ impl Vertex {
 const VERTICES: [Vertex; 3] = [
     Vertex {
         position: [0.0, -0.5],
-        color:    [1.0, 0.0, 0.0],
+        color: [1.0, 0.0, 0.0],
     },
     Vertex {
         position: [0.5, 0.5],
-        color:    [0.0, 1.0, 0.0],
+        color: [0.0, 1.0, 0.0],
     },
     Vertex {
         position: [-0.5, 0.5],
-        color:    [0.0, 0.0, 1.0],
+        color: [0.0, 0.0, 1.0],
     },
 ];
 
 pub struct VulkanState {
-    _entry:                     ash::Entry,
-    instance:                   ash::Instance,
-    debug_messenger:            Option<(ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
-    surface_instance:           khr::surface::Instance,
-    surface_khr:                vk::SurfaceKHR,
-    adapter:                    vk::PhysicalDevice,
-    queue_family_indices:       QueueFamilyIndices,
-    device:                     ash::Device,
-    graphics_queue:             vk::Queue,
-    present_queue:              vk::Queue,
-    swapchain_device:           khr::swapchain::Device,
-    swapchain_khr:              vk::SwapchainKHR,
-    swapchain_images:           Vec<vk::Image>,
-    swapchain_image_format:     vk::Format,
-    swapchain_extent:           vk::Extent2D,
-    swapchain_image_views:      Vec<vk::ImageView>,
-    render_pass:                vk::RenderPass,
-    pipeline_layout:            vk::PipelineLayout,
-    pipeline:                   vk::Pipeline,
-    swapchain_framebuffers:     Vec<vk::Framebuffer>,
-    command_pool:               vk::CommandPool,
-    vertex_buffer:              vk::Buffer,
-    vertex_buffer_memory:       vk::DeviceMemory,
-    command_buffers:            Vec<vk::CommandBuffer>,
+    _entry: ash::Entry,
+    instance: ash::Instance,
+    debug_messenger: Option<(ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
+    surface_instance: khr::surface::Instance,
+    surface_khr: vk::SurfaceKHR,
+    adapter: vk::PhysicalDevice,
+    queue_family_indices: QueueFamilyIndices,
+    device: ash::Device,
+    graphics_queue: vk::Queue,
+    present_queue: vk::Queue,
+    swapchain_device: khr::swapchain::Device,
+    swapchain_khr: vk::SwapchainKHR,
+    swapchain_images: Vec<vk::Image>,
+    swapchain_image_format: vk::Format,
+    swapchain_extent: vk::Extent2D,
+    swapchain_image_views: Vec<vk::ImageView>,
+    render_pass: vk::RenderPass,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    swapchain_framebuffers: Vec<vk::Framebuffer>,
+    command_pool: vk::CommandPool,
+    vertex_buffer: vk::Buffer,
+    vertex_buffer_memory: vk::DeviceMemory,
+    command_buffers: Vec<vk::CommandBuffer>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
-    in_flight_fences:           Vec<vk::Fence>,
-    current_frame:              usize,
+    in_flight_fences: Vec<vk::Fence>,
+    current_frame: usize,
 
     pub framebuffer_resized: bool,
-    pub width:               u32,
-    pub height:              u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl VulkanState {
@@ -624,18 +623,22 @@ impl VulkanState {
             .expect("Failed to create command pool")
     }
 
-    fn create_vertex_buffer(
+    fn create_buffer(
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
         device: &ash::Device,
+
+        size: vk::DeviceSize,
+        usage: vk::BufferUsageFlags,
+        memory_flags: vk::MemoryPropertyFlags,
     ) -> (vk::Buffer, vk::DeviceMemory) {
         let buffer_create_info = vk::BufferCreateInfo::default()
-            .size((size_of::<Vertex>() * VERTICES.len()) as DeviceSize)
-            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+            .size(size)
+            .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let vertex_buffer = unsafe { device.create_buffer(&buffer_create_info, None) }
-            .expect("Failed to create vertex buffer");
+            .expect("Failed to create buffer");
 
         let memory_requirements = unsafe { device.get_buffer_memory_requirements(vertex_buffer) };
 
@@ -645,32 +648,41 @@ impl VulkanState {
                 instance,
                 adapter,
                 memory_requirements.memory_type_bits,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                memory_flags,
             ));
 
         let vertex_buffer_memory = unsafe { device.allocate_memory(&memory_allocate_info, None) }
-            .expect("Failed to allocate vertex buffer memory");
+            .expect("Failed to allocate buffer memory");
 
         unsafe { device.bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0) }
-            .expect("Failed to bind vertex buffer memory");
+            .expect("Failed to bind buffer memory");
+
+        (vertex_buffer, vertex_buffer_memory)
+    }
+
+    fn create_vertex_buffer(
+        instance: &ash::Instance,
+        adapter: vk::PhysicalDevice,
+        device: &ash::Device,
+    ) -> (vk::Buffer, vk::DeviceMemory) {
+        let size = (size_of::<Vertex>() * VERTICES.len()) as vk::DeviceSize;
+
+        let (vertex_buffer, vertex_buffer_memory) = Self::create_buffer(
+            instance,
+            adapter,
+            device,
+            size,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
 
         let data_ptr = unsafe {
-            device.map_memory(
-                vertex_buffer_memory,
-                0,
-                buffer_create_info.size,
-                vk::MemoryMapFlags::empty(),
-            )
+            device.map_memory(vertex_buffer_memory, 0, size, vk::MemoryMapFlags::empty())
         }
         .expect("Failed to map vertex buffer memory");
 
-        let mut vertex_align = unsafe {
-            Align::new(
-                data_ptr,
-                align_of::<Vertex>() as DeviceSize,
-                memory_requirements.size,
-            )
-        };
+        let mut vertex_align =
+            unsafe { Align::new(data_ptr, align_of::<Vertex>() as vk::DeviceSize, size) };
         vertex_align.copy_from_slice(&VERTICES);
 
         unsafe { device.unmap_memory(vertex_buffer_memory) };
@@ -1081,7 +1093,7 @@ impl VulkanState {
 
 struct QueueFamilyIndices {
     graphics_family: Option<u32>,
-    present_family:  Option<u32>,
+    present_family: Option<u32>,
 }
 
 impl QueueFamilyIndices {
@@ -1093,7 +1105,7 @@ impl QueueFamilyIndices {
     ) -> Self {
         let mut indices = Self {
             graphics_family: None,
-            present_family:  None,
+            present_family: None,
         };
 
         let queue_families =
@@ -1120,7 +1132,7 @@ impl QueueFamilyIndices {
 
         Self {
             graphics_family: indices.graphics_family,
-            present_family:  indices.present_family,
+            present_family: indices.present_family,
         }
     }
 
@@ -1130,8 +1142,8 @@ impl QueueFamilyIndices {
 }
 
 struct SwapchainSupportDetails {
-    capabilities:  vk::SurfaceCapabilitiesKHR,
-    formats:       Vec<vk::SurfaceFormatKHR>,
+    capabilities: vk::SurfaceCapabilitiesKHR,
+    formats: Vec<vk::SurfaceFormatKHR>,
     present_modes: Vec<vk::PresentModeKHR>,
 }
 
@@ -1143,10 +1155,10 @@ impl SwapchainSupportDetails {
     ) -> Self {
         unsafe {
             Self {
-                capabilities:  surface
+                capabilities: surface
                     .get_physical_device_surface_capabilities(adapter, surface_khr)
                     .expect("Failed to get adapter surface capabilities"),
-                formats:       surface
+                formats: surface
                     .get_physical_device_surface_formats(adapter, surface_khr)
                     .expect("Failed to get adapter surface formats"),
                 present_modes: surface

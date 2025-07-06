@@ -18,7 +18,7 @@ const HEIGHT: u32 = 600;
 #[derive(Default)]
 struct App {
     window: Option<Window>,
-    state:  Option<VulkanState>,
+    state: Option<VulkanState>,
 }
 
 impl ApplicationHandler for App {
