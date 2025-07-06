@@ -154,7 +154,7 @@ impl VulkanState {
         let command_pool = Self::create_command_pool(&device, &queue_family_indices);
 
         let (vertex_buffer, vertex_buffer_memory) =
-            Self::create_vertex_buffer(&instance, adapter, &device);
+            Self::create_vertex_buffer(&instance, adapter, &device, graphics_queue, command_pool);
 
         let command_buffers = Self::create_command_buffers(&device, command_pool);
 
@@ -627,7 +627,6 @@ impl VulkanState {
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
         device: &ash::Device,
-
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         memory_flags: vk::MemoryPropertyFlags,
@@ -660,32 +659,100 @@ impl VulkanState {
         (vertex_buffer, vertex_buffer_memory)
     }
 
+    fn copy_buffer(
+        device: &ash::Device,
+        graphics_queue: vk::Queue,
+        src_buffer: vk::Buffer,
+        dst_buffer: vk::Buffer,
+        size: vk::DeviceSize,
+        command_pool: vk::CommandPool,
+    ) {
+        let mut command_buffers: Vec<vk::CommandBuffer> = Vec::with_capacity(1);
+
+        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(command_buffers.capacity() as u32);
+
+        command_buffers = unsafe { device.allocate_command_buffers(&command_buffer_allocate_info) }
+            .expect("Failed to allocate command buffers");
+
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe { device.begin_command_buffer(command_buffers[0], &command_buffer_begin_info) }
+            .expect("Failed to begin recording command buffer");
+
+        let copy_region = vk::BufferCopy::default().size(size);
+
+        unsafe {
+            device.cmd_copy_buffer(command_buffers[0], src_buffer, dst_buffer, &[copy_region]);
+            device.end_command_buffer(command_buffers[0])
+        }
+        .expect("Failed to end recording command buffer");
+
+        let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+
+        unsafe {
+            device
+                .queue_submit(graphics_queue, &[submit_info], vk::Fence::null())
+                .unwrap();
+            device.queue_wait_idle(graphics_queue).unwrap();
+            device.free_command_buffers(command_pool, &command_buffers);
+        }
+    }
+
     fn create_vertex_buffer(
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
         device: &ash::Device,
+        graphics_queue: vk::Queue,
+        command_pool: vk::CommandPool,
     ) -> (vk::Buffer, vk::DeviceMemory) {
         let size = (size_of::<Vertex>() * VERTICES.len()) as vk::DeviceSize;
+
+        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(
+            instance,
+            adapter,
+            device,
+            size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        );
+
+        let data_ptr = unsafe {
+            device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())
+        }
+        .expect("Failed to map staging buffer memory");
+
+        let mut vertex_align =
+            unsafe { Align::new(data_ptr, align_of::<Vertex>() as vk::DeviceSize, size) };
+        vertex_align.copy_from_slice(&VERTICES);
+
+        unsafe { device.unmap_memory(staging_buffer_memory) };
 
         let (vertex_buffer, vertex_buffer_memory) = Self::create_buffer(
             instance,
             adapter,
             device,
             size,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
 
-        let data_ptr = unsafe {
-            device.map_memory(vertex_buffer_memory, 0, size, vk::MemoryMapFlags::empty())
+        Self::copy_buffer(
+            device,
+            graphics_queue,
+            staging_buffer,
+            vertex_buffer,
+            size,
+            command_pool,
+        );
+
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
         }
-        .expect("Failed to map vertex buffer memory");
-
-        let mut vertex_align =
-            unsafe { Align::new(data_ptr, align_of::<Vertex>() as vk::DeviceSize, size) };
-        vertex_align.copy_from_slice(&VERTICES);
-
-        unsafe { device.unmap_memory(vertex_buffer_memory) };
 
         (vertex_buffer, vertex_buffer_memory)
     }
