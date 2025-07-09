@@ -8,10 +8,17 @@ struct VSOutput {
     float3 frag_color : COLOR0;
 };
 
+struct UniformData {
+    float4x4 model;
+    float4x4 view;
+    float4x4 proj;
+}
+ConstantBuffer<UniformData> uniform_buffer;
+
 [shader("vertex")]
 VSOutput main(VSInput input) {
     VSOutput output;
-    output.position = float4(input.in_position, 0.0, 1.0);
+    output.position = mul(uniform_buffer.proj * uniform_buffer.view * uniform_buffer.model, float4(input.in_position, 0.0, 1.0));
     output.frag_color = input.in_color;
     return output;
 }

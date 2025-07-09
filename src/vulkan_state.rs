@@ -6,8 +6,10 @@ use ash::vk;
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::collections::HashSet;
+use std::ffi;
 use std::ffi::{CStr, c_char};
 use std::mem::offset_of;
+use std::time::Instant;
 
 const ADAPTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -63,37 +65,59 @@ const VERTICES: [Vertex; 4] = [
 
 const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UniformBufferData {
+    model: glam::Mat4,
+    view: glam::Mat4,
+    proj: glam::Mat4,
+}
+
 pub struct VulkanState {
     _entry: ash::Entry,
     instance: ash::Instance,
     debug_messenger: Option<(ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
+
     surface_instance: khr::surface::Instance,
     surface_khr: vk::SurfaceKHR,
+
     adapter: vk::PhysicalDevice,
-    queue_family_indices: QueueFamilyIndices,
     device: ash::Device,
+
+    queue_family_indices: QueueFamilyIndices,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
+
     swapchain_device: khr::swapchain::Device,
     swapchain_khr: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
     swapchain_image_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<vk::ImageView>,
+    swapchain_framebuffers: Vec<vk::Framebuffer>,
+
     render_pass: vk::RenderPass,
+    descriptor_set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
-    swapchain_framebuffers: Vec<vk::Framebuffer>,
+
     command_pool: vk::CommandPool,
+    command_buffers: Vec<vk::CommandBuffer>,
+
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
+
     index_buffer: vk::Buffer,
     index_buffer_memory: vk::DeviceMemory,
-    command_buffers: Vec<vk::CommandBuffer>,
+
+    uniform_buffers: Vec<vk::Buffer>,
+    uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    uniform_buffers_mapped: Vec<*mut ffi::c_void>,
+
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
-    current_frame: usize,
+    frame_in_flight_index: usize,
 
     pub framebuffer_resized: bool,
     pub width: u32,
@@ -150,7 +174,11 @@ impl VulkanState {
 
         let render_pass = Self::create_render_pass(&device, swapchain_image_format);
 
-        let (pipeline_layout, pipeline) = Self::create_graphics_pipeline(&device, render_pass);
+        let descriptor_set_layout = Self::create_descriptor_set_layout(&device);
+        let descriptor_set_layouts = [descriptor_set_layout];
+
+        let (pipeline_layout, pipeline) =
+            Self::create_graphics_pipeline(&device, render_pass, &descriptor_set_layouts);
 
         let swapchain_framebuffers = Self::create_framebuffers(
             &device,
@@ -167,6 +195,9 @@ impl VulkanState {
         let (index_buffer, index_buffer_memory) =
             Self::create_index_buffer(&instance, adapter, &device, graphics_queue, command_pool);
 
+        let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
+            Self::create_uniform_buffers(&instance, adapter, &device);
+
         let command_buffers = Self::create_command_buffers(&device, command_pool);
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -176,33 +207,47 @@ impl VulkanState {
             _entry: entry,
             instance,
             debug_messenger,
+
             surface_instance,
             surface_khr,
+
             adapter,
             queue_family_indices,
             device,
+
             graphics_queue,
             present_queue,
+
             swapchain_device,
             swapchain_khr,
             swapchain_images,
             swapchain_image_format,
             swapchain_extent,
             swapchain_image_views,
+            swapchain_framebuffers,
+
             render_pass,
+            descriptor_set_layout,
             pipeline_layout,
             pipeline,
-            swapchain_framebuffers,
+
             command_pool,
+            command_buffers,
+
             vertex_buffer,
             vertex_buffer_memory,
+
             index_buffer,
             index_buffer_memory,
-            command_buffers,
+
+            uniform_buffers,
+            uniform_buffers_memory,
+            uniform_buffers_mapped,
+
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
-            current_frame: 0,
+            frame_in_flight_index: 0,
 
             framebuffer_resized: false,
             width,
@@ -385,6 +430,47 @@ impl VulkanState {
         (device, graphics_queue, present_queue)
     }
 
+    fn choose_surface_format(surface_formats: Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
+        for surface_format in &surface_formats {
+            if surface_format.format == vk::Format::B8G8R8A8_SRGB
+                && surface_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+            {
+                return *surface_format;
+            }
+        }
+        surface_formats[0]
+    }
+
+    fn choose_present_mode(present_modes: Vec<vk::PresentModeKHR>) -> vk::PresentModeKHR {
+        for present_mode in &present_modes {
+            if *present_mode == vk::PresentModeKHR::IMMEDIATE {
+                return *present_mode;
+            }
+        }
+        vk::PresentModeKHR::FIFO
+    }
+
+    fn choose_extent(
+        capabilities: vk::SurfaceCapabilitiesKHR,
+        width: u32,
+        height: u32,
+    ) -> vk::Extent2D {
+        if capabilities.current_extent.width != u32::MAX {
+            return capabilities.current_extent;
+        }
+        let mut actual_extent = vk::Extent2D { width, height };
+        actual_extent.width = actual_extent.width.clamp(
+            capabilities.min_image_extent.width,
+            capabilities.max_image_extent.width,
+        );
+        actual_extent.height = actual_extent.height.clamp(
+            capabilities.min_image_extent.height,
+            capabilities.max_image_extent.height,
+        );
+
+        actual_extent
+    }
+
     fn create_swapchain(
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
@@ -493,9 +579,74 @@ impl VulkanState {
         image_views
     }
 
+    fn create_render_pass(
+        device: &ash::Device,
+        swapchain_image_format: vk::Format,
+    ) -> vk::RenderPass {
+        let color_attachment_description = vk::AttachmentDescription::default()
+            .format(swapchain_image_format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+        let color_attachment_descriptions = [color_attachment_description];
+
+        let color_attachment_reference = vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let color_attachment_references = [color_attachment_reference];
+
+        let subpass_description = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&color_attachment_references);
+        let subpass_descriptions = [subpass_description];
+
+        let subpass_dependency = vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+        let subpass_dependencies = [subpass_dependency];
+
+        let render_pass_create_info = vk::RenderPassCreateInfo::default()
+            .attachments(&color_attachment_descriptions)
+            .subpasses(&subpass_descriptions)
+            .dependencies(&subpass_dependencies);
+
+        unsafe { device.create_render_pass(&render_pass_create_info, None) }
+            .expect("Failed to create render pass")
+    }
+
+    fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
+        let uniform_buffer_layout_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+        let uniform_buffer_layout_bindings = [uniform_buffer_layout_binding];
+
+        let descriptor_set_layout_create_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&uniform_buffer_layout_bindings);
+
+        unsafe { device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None) }
+            .expect("Failed to create descriptor set layout")
+    }
+
+    fn create_shader_module(device: &ash::Device, words: &[u32]) -> vk::ShaderModule {
+        let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(words);
+        unsafe { device.create_shader_module(&shader_module_create_info, None) }
+            .expect("Failed to create shader module")
+    }
+
     fn create_graphics_pipeline(
         device: &ash::Device,
         render_pass: vk::RenderPass,
+        descriptor_set_layouts: &[vk::DescriptorSetLayout],
     ) -> (vk::PipelineLayout, vk::Pipeline) {
         let mut vertex_shader_file = std::fs::File::open("src/shaders/spirv/vertex.spv")
             .expect("Failed to open vertex shader file");
@@ -563,7 +714,8 @@ impl VulkanState {
             .logic_op_enable(false)
             .attachments(&color_blend_attachment_states);
 
-        let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default();
+        let pipeline_layout_create_info =
+            vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts);
 
         let pipeline_layout =
             unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }
@@ -634,6 +786,25 @@ impl VulkanState {
 
         unsafe { device.create_command_pool(&command_pool_create_info, None) }
             .expect("Failed to create command pool")
+    }
+
+    fn find_memory_type(
+        instance: &ash::Instance,
+        adapter: vk::PhysicalDevice,
+        type_filter: u32,
+        properties: vk::MemoryPropertyFlags,
+    ) -> u32 {
+        let memory_properties = unsafe { instance.get_physical_device_memory_properties(adapter) };
+
+        for i in 0..memory_properties.memory_type_count {
+            if (type_filter & (1 << i) != 0)
+                && memory_properties.memory_types[i as usize].property_flags & properties
+                    == properties
+            {
+                return i;
+            }
+        }
+        panic!("Failed to find suitable memory type");
     }
 
     fn create_buffer(
@@ -777,24 +948,29 @@ impl VulkanState {
         graphics_queue: vk::Queue,
         command_pool: vk::CommandPool,
     ) -> (vk::Buffer, vk::DeviceMemory) {
-        let size = (size_of::<u16>() * INDICES.len()) as vk::DeviceSize;
+        let buffer_size = (size_of::<u16>() * INDICES.len()) as vk::DeviceSize;
 
         let (staging_buffer, staging_buffer_memory) = Self::create_buffer(
             instance,
             adapter,
             device,
-            size,
+            buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
 
         let data_ptr = unsafe {
-            device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())
+            device.map_memory(
+                staging_buffer_memory,
+                0,
+                buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )
         }
         .expect("Failed to map staging buffer memory");
 
         let mut vertex_align =
-            unsafe { Align::new(data_ptr, align_of::<u16>() as vk::DeviceSize, size) };
+            unsafe { Align::new(data_ptr, align_of::<u16>() as vk::DeviceSize, buffer_size) };
         vertex_align.copy_from_slice(&INDICES);
 
         unsafe { device.unmap_memory(staging_buffer_memory) };
@@ -803,7 +979,7 @@ impl VulkanState {
             instance,
             adapter,
             device,
-            size,
+            buffer_size,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
@@ -813,7 +989,7 @@ impl VulkanState {
             graphics_queue,
             staging_buffer,
             index_buffer,
-            size,
+            buffer_size,
             command_pool,
         );
 
@@ -825,23 +1001,46 @@ impl VulkanState {
         (index_buffer, index_buffer_memory)
     }
 
-    fn find_memory_type(
+    fn create_uniform_buffers(
         instance: &ash::Instance,
         adapter: vk::PhysicalDevice,
-        type_filter: u32,
-        properties: vk::MemoryPropertyFlags,
-    ) -> u32 {
-        let memory_properties = unsafe { instance.get_physical_device_memory_properties(adapter) };
+        device: &ash::Device,
+    ) -> (
+        Vec<vk::Buffer>,
+        Vec<vk::DeviceMemory>,
+        Vec<*mut ffi::c_void>,
+    ) {
+        let buffer_size = size_of::<UniformBufferData>() as vk::DeviceSize;
 
-        for i in 0..memory_properties.memory_type_count {
-            if (type_filter & (1 << i) != 0)
-                && memory_properties.memory_types[i as usize].property_flags & properties
-                    == properties
-            {
-                return i;
-            }
+        let mut uniform_buffers: Vec<vk::Buffer> = Vec::new();
+        let mut uniform_buffers_memory: Vec<vk::DeviceMemory> = Vec::new();
+        let mut uniform_buffers_mapped: Vec<*mut ffi::c_void> = Vec::new();
+
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            let (buffer, buffer_memory) = Self::create_buffer(
+                instance,
+                adapter,
+                device,
+                buffer_size,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            uniform_buffers.push(buffer);
+            uniform_buffers_memory.push(buffer_memory);
+
+            uniform_buffers_mapped.push(
+                unsafe {
+                    device.map_memory(buffer_memory, 0, buffer_size, vk::MemoryMapFlags::empty())
+                }
+                .expect("Failed to map uniform buffer memory"),
+            );
         }
-        panic!("Failed to find suitable memory type");
+
+        (
+            uniform_buffers,
+            uniform_buffers_memory,
+            uniform_buffers_mapped,
+        )
     }
 
     fn create_command_buffers(
@@ -856,6 +1055,44 @@ impl VulkanState {
 
         unsafe { device.allocate_command_buffers(&command_buffer_allocate_info) }
             .expect("Failed to allocate command buffers")
+    }
+
+    fn create_sync_objects(
+        device: &ash::Device,
+        swapchain_image_count: usize,
+    ) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
+        let mut image_available_semaphores: Vec<vk::Semaphore> =
+            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut render_finished_semaphores: Vec<vk::Semaphore> =
+            Vec::with_capacity(swapchain_image_count);
+        let mut in_flight_fences: Vec<vk::Fence> = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+        let semaphore_create_info = vk::SemaphoreCreateInfo::default();
+        let fence_create_info =
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            image_available_semaphores.push(
+                unsafe { device.create_semaphore(&semaphore_create_info, None) }
+                    .expect("Failed to create image available semaphore"),
+            );
+            in_flight_fences.push(
+                unsafe { device.create_fence(&fence_create_info, None) }
+                    .expect("Failed to create in flight fence"),
+            );
+        }
+        for _ in 0..swapchain_image_count {
+            render_finished_semaphores.push(
+                unsafe { device.create_semaphore(&semaphore_create_info, None) }
+                    .expect("Failed to create render finished semaphore"),
+            );
+        }
+
+        (
+            image_available_semaphores,
+            render_finished_semaphores,
+            in_flight_fences,
+        )
     }
 
     fn record_command_buffer(
@@ -933,134 +1170,6 @@ impl VulkanState {
             .expect("Failed to end recording command buffer");
     }
 
-    fn create_render_pass(
-        device: &ash::Device,
-        swapchain_image_format: vk::Format,
-    ) -> vk::RenderPass {
-        let color_attachment_description = vk::AttachmentDescription::default()
-            .format(swapchain_image_format)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
-        let color_attachment_descriptions = [color_attachment_description];
-
-        let color_attachment_reference = vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let color_attachment_references = [color_attachment_reference];
-
-        let subpass_description = vk::SubpassDescription::default()
-            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(&color_attachment_references);
-        let subpass_descriptions = [subpass_description];
-
-        let subpass_dependency = vk::SubpassDependency::default()
-            .src_subpass(vk::SUBPASS_EXTERNAL)
-            .dst_subpass(0)
-            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
-        let subpass_dependencies = [subpass_dependency];
-
-        let render_pass_create_info = vk::RenderPassCreateInfo::default()
-            .attachments(&color_attachment_descriptions)
-            .subpasses(&subpass_descriptions)
-            .dependencies(&subpass_dependencies);
-
-        unsafe { device.create_render_pass(&render_pass_create_info, None) }
-            .expect("Failed to create render pass")
-    }
-
-    fn create_shader_module(device: &ash::Device, words: &[u32]) -> vk::ShaderModule {
-        let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(words);
-        unsafe { device.create_shader_module(&shader_module_create_info, None) }
-            .expect("Failed to create shader module")
-    }
-
-    fn choose_surface_format(surface_formats: Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
-        for surface_format in &surface_formats {
-            if surface_format.format == vk::Format::B8G8R8A8_SRGB
-                && surface_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-            {
-                return *surface_format;
-            }
-        }
-        surface_formats[0]
-    }
-
-    fn choose_present_mode(present_modes: Vec<vk::PresentModeKHR>) -> vk::PresentModeKHR {
-        for present_mode in &present_modes {
-            if *present_mode == vk::PresentModeKHR::IMMEDIATE {
-                return *present_mode;
-            }
-        }
-        vk::PresentModeKHR::FIFO
-    }
-
-    fn choose_extent(
-        capabilities: vk::SurfaceCapabilitiesKHR,
-        width: u32,
-        height: u32,
-    ) -> vk::Extent2D {
-        if capabilities.current_extent.width != u32::MAX {
-            return capabilities.current_extent;
-        }
-        let mut actual_extent = vk::Extent2D { width, height };
-        actual_extent.width = actual_extent.width.clamp(
-            capabilities.min_image_extent.width,
-            capabilities.max_image_extent.width,
-        );
-        actual_extent.height = actual_extent.height.clamp(
-            capabilities.min_image_extent.height,
-            capabilities.max_image_extent.height,
-        );
-
-        actual_extent
-    }
-
-    fn create_sync_objects(
-        device: &ash::Device,
-        swapchain_image_count: usize,
-    ) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
-        let mut image_available_semaphores: Vec<vk::Semaphore> =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut render_finished_semaphores: Vec<vk::Semaphore> =
-            Vec::with_capacity(swapchain_image_count);
-        let mut in_flight_fences: Vec<vk::Fence> = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-        let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-        let fence_create_info =
-            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            image_available_semaphores.push(
-                unsafe { device.create_semaphore(&semaphore_create_info, None) }
-                    .expect("Failed to create image available semaphore"),
-            );
-            in_flight_fences.push(
-                unsafe { device.create_fence(&fence_create_info, None) }
-                    .expect("Failed to create in flight fence"),
-            );
-        }
-        for _ in 0..swapchain_image_count {
-            render_finished_semaphores.push(
-                unsafe { device.create_semaphore(&semaphore_create_info, None) }
-                    .expect("Failed to create render finished semaphore"),
-            );
-        }
-
-        (
-            image_available_semaphores,
-            render_finished_semaphores,
-            in_flight_fences,
-        )
-    }
-
     fn cleanup_swapchain(&self) {
         for framebuffer in &self.swapchain_framebuffers {
             unsafe { self.device.destroy_framebuffer(*framebuffer, None) };
@@ -1110,10 +1219,41 @@ impl VulkanState {
         );
     }
 
+    fn update_uniform_buffer(&self) {
+        let model = glam::Mat4::from_euler(
+            glam::EulerRot::XYZ,
+            0.0,
+            0.0,
+            Instant::now().elapsed().as_secs_f32() * 90.0_f32.to_radians(),
+        );
+        let view = glam::Mat4::look_at_lh(
+            glam::Vec3::new(2.0, 2.0, 2.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::new(0.0, 0.0, 1.0),
+        );
+        let proj = glam::Mat4::perspective_lh(
+            45.0_f32.to_radians(),
+            self.width as f32 / self.height as f32,
+            0.1,
+            10.0,
+        );
+
+        let uniform_buffer_data = UniformBufferData { model, view, proj };
+
+        let mut uniform_align = unsafe {
+            Align::new(
+                self.uniform_buffers_mapped[self.frame_in_flight_index],
+                align_of::<f32>() as vk::DeviceSize,
+                size_of::<UniformBufferData>() as vk::DeviceSize,
+            )
+        };
+        uniform_align.copy_from_slice(&[uniform_buffer_data]);
+    }
+
     pub fn draw_frame(&mut self) {
         unsafe {
             self.device.wait_for_fences(
-                &[self.in_flight_fences[self.current_frame]],
+                &[self.in_flight_fences[self.frame_in_flight_index]],
                 true,
                 u64::MAX,
             )
@@ -1124,7 +1264,7 @@ impl VulkanState {
             self.swapchain_device.acquire_next_image(
                 self.swapchain_khr,
                 u64::MAX,
-                self.image_available_semaphores[self.current_frame],
+                self.image_available_semaphores[self.frame_in_flight_index],
                 vk::Fence::null(),
             )
         };
@@ -1152,13 +1292,13 @@ impl VulkanState {
 
         unsafe {
             self.device
-                .reset_fences(&[self.in_flight_fences[self.current_frame]])
+                .reset_fences(&[self.in_flight_fences[self.frame_in_flight_index]])
         }
         .unwrap();
 
         unsafe {
             self.device.reset_command_buffer(
-                self.command_buffers[self.current_frame],
+                self.command_buffers[self.frame_in_flight_index],
                 vk::CommandBufferResetFlags::empty(),
             )
         }
@@ -1166,7 +1306,7 @@ impl VulkanState {
 
         Self::record_command_buffer(
             &self.device,
-            self.command_buffers[self.current_frame],
+            self.command_buffers[self.frame_in_flight_index],
             self.render_pass,
             self.swapchain_framebuffers[image_index as usize],
             self.swapchain_extent,
@@ -1175,10 +1315,12 @@ impl VulkanState {
             self.index_buffer,
         );
 
-        let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
+        let wait_semaphores = [self.image_available_semaphores[self.frame_in_flight_index]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let command_buffers = [self.command_buffers[self.current_frame]];
+        let command_buffers = [self.command_buffers[self.frame_in_flight_index]];
         let signal_semaphores = [self.render_finished_semaphores[image_index as usize]];
+
+        self.update_uniform_buffer();
 
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
@@ -1191,7 +1333,7 @@ impl VulkanState {
             self.device.queue_submit(
                 self.graphics_queue,
                 &submit_infos,
-                self.in_flight_fences[self.current_frame],
+                self.in_flight_fences[self.frame_in_flight_index],
             )
         }
         .unwrap();
@@ -1230,7 +1372,7 @@ impl VulkanState {
             self.recreate_swapchain();
         }
 
-        self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
+        self.frame_in_flight_index = (self.frame_in_flight_index + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 }
 
@@ -1318,6 +1460,15 @@ impl Drop for VulkanState {
             self.device.device_wait_idle().unwrap();
 
             self.cleanup_swapchain();
+
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                self.device.destroy_buffer(self.uniform_buffers[i], None);
+                self.device
+                    .free_memory(self.uniform_buffers_memory[i], None);
+            }
+
+            self.device
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
 
             self.device.destroy_buffer(self.index_buffer, None);
             self.device.free_memory(self.index_buffer_memory, None);
