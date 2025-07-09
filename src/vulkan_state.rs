@@ -14,7 +14,7 @@ use std::time::Instant;
 const ADAPTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 struct Vertex {
     position: [f32; 2],
     color: [f32; 3],
@@ -66,6 +66,7 @@ const VERTICES: [Vertex; 4] = [
 const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
 #[repr(C)]
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 struct UniformBufferData {
     model: glam::Mat4,
@@ -98,6 +99,8 @@ pub struct VulkanState {
 
     render_pass: vk::RenderPass,
     descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_sets: Vec<vk::DescriptorSet>,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
 
@@ -118,6 +121,8 @@ pub struct VulkanState {
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
     frame_in_flight_index: usize,
+
+    timer: Instant,
 
     pub framebuffer_resized: bool,
     pub width: u32,
@@ -198,6 +203,14 @@ impl VulkanState {
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
             Self::create_uniform_buffers(&instance, adapter, &device);
 
+        let descriptor_pool = Self::create_descriptor_pool(&device);
+        let descriptor_sets = Self::create_descriptor_sets(
+            &device,
+            descriptor_set_layout,
+            descriptor_pool,
+            &uniform_buffers,
+        );
+
         let command_buffers = Self::create_command_buffers(&device, command_pool);
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -228,6 +241,8 @@ impl VulkanState {
 
             render_pass,
             descriptor_set_layout,
+            descriptor_pool,
+            descriptor_sets,
             pipeline_layout,
             pipeline,
 
@@ -248,6 +263,8 @@ impl VulkanState {
             render_finished_semaphores,
             in_flight_fences,
             frame_in_flight_index: 0,
+
+            timer: Instant::now(),
 
             framebuffer_resized: false,
             width,
@@ -698,7 +715,7 @@ impl VulkanState {
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
             .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::CLOCKWISE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
         let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
@@ -1043,6 +1060,61 @@ impl VulkanState {
         )
     }
 
+    fn create_descriptor_pool(device: &ash::Device) -> vk::DescriptorPool {
+        let descriptor_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32);
+        let descriptor_pool_sizes = [descriptor_pool_size];
+
+        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(&descriptor_pool_sizes)
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
+
+        unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None) }
+            .expect("Failed to create descriptor pool")
+    }
+
+    fn create_descriptor_sets(
+        device: &ash::Device,
+        descriptor_set_layout: vk::DescriptorSetLayout,
+        descriptor_pool: vk::DescriptorPool,
+        uniform_buffers: &Vec<vk::Buffer>,
+    ) -> Vec<vk::DescriptorSet> {
+        let mut descriptor_set_layouts = Vec::new();
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            descriptor_set_layouts.push(descriptor_set_layout);
+        }
+
+        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&descriptor_set_layouts);
+
+        let descriptor_sets =
+            unsafe { device.allocate_descriptor_sets(&descriptor_set_allocate_info) }
+                .expect("Failed to allocate descriptor sets");
+
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let descriptor_buffer_info = vk::DescriptorBufferInfo::default()
+                .buffer(uniform_buffers[i])
+                .offset(0)
+                .range(vk::WHOLE_SIZE);
+            let descriptor_buffer_infos = [descriptor_buffer_info];
+
+            let descriptor_write = vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_sets[i])
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .buffer_info(&descriptor_buffer_infos);
+            let descriptor_writes = [descriptor_write];
+
+            unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
+        }
+
+        descriptor_sets
+    }
+
     fn create_command_buffers(
         device: &ash::Device,
         command_pool: vk::CommandPool,
@@ -1095,16 +1167,7 @@ impl VulkanState {
         )
     }
 
-    fn record_command_buffer(
-        device: &ash::Device,
-        command_buffer: vk::CommandBuffer,
-        render_pass: vk::RenderPass,
-        framebuffer: vk::Framebuffer,
-        swapchain_extent: vk::Extent2D,
-        pipeline: vk::Pipeline,
-        vertex_buffer: vk::Buffer,
-        index_buffer: vk::Buffer,
-    ) {
+    fn record_command_buffer(&self, image_index: u32) {
         let clear_color = vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [0.0, 0.0, 0.0, 1.0],
@@ -1113,60 +1176,71 @@ impl VulkanState {
         let clear_color_values = [clear_color];
 
         let render_pass_begin_info = vk::RenderPassBeginInfo::default()
-            .render_pass(render_pass)
-            .framebuffer(framebuffer)
+            .render_pass(self.render_pass)
+            .framebuffer(self.swapchain_framebuffers[image_index as usize])
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: swapchain_extent,
+                extent: self.swapchain_extent,
             })
             .clear_values(&clear_color_values);
 
         let viewport = vk::Viewport::default()
             .x(0.0)
             .y(0.0)
-            .width(swapchain_extent.width as f32)
-            .height(swapchain_extent.height as f32)
+            .width(self.swapchain_extent.width as f32)
+            .height(self.swapchain_extent.height as f32)
             .min_depth(0.0)
             .max_depth(1.0);
         let viewports = [viewport];
 
         let scissor = vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
-            extent: swapchain_extent,
+            extent: self.swapchain_extent,
         };
         let scissors = [scissor];
 
         let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
 
-        unsafe { device.begin_command_buffer(command_buffer, &command_buffer_begin_info) }
+        let command_buffer = self.command_buffers[self.frame_in_flight_index];
+
+        unsafe { self.device.begin_command_buffer(command_buffer, &command_buffer_begin_info) }
             .expect("Failed to begin recording command buffer");
 
         unsafe {
-            device.cmd_begin_render_pass(
+            self.device.cmd_begin_render_pass(
                 command_buffer,
                 &render_pass_begin_info,
                 vk::SubpassContents::INLINE,
             );
 
-            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
 
-            device.cmd_set_viewport(command_buffer, 0, &viewports);
-            device.cmd_set_scissor(command_buffer, 0, &scissors);
+            self.device.cmd_set_viewport(command_buffer, 0, &viewports);
+            self.device.cmd_set_scissor(command_buffer, 0, &scissors);
 
-            device.cmd_bind_vertex_buffers(command_buffer, 0, &[vertex_buffer], &[0]);
-            device.cmd_bind_index_buffer(
+            self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[self.vertex_buffer], &[0]);
+            self.device.cmd_bind_index_buffer(
                 command_buffer,
-                index_buffer,
+                self.index_buffer,
                 vk::DeviceSize::default(),
                 vk::IndexType::UINT16,
             );
 
-            device.cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
+            self.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[self.descriptor_sets[self.frame_in_flight_index]],
+                &[],
+            );
 
-            device.cmd_end_render_pass(command_buffer);
+            self.device.cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
+
+            self.device.cmd_end_render_pass(command_buffer);
         };
 
-        unsafe { device.end_command_buffer(command_buffer) }
+        unsafe { self.device.end_command_buffer(command_buffer) }
             .expect("Failed to end recording command buffer");
     }
 
@@ -1220,23 +1294,21 @@ impl VulkanState {
     }
 
     fn update_uniform_buffer(&self) {
-        let model = glam::Mat4::from_euler(
-            glam::EulerRot::XYZ,
-            0.0,
-            0.0,
-            Instant::now().elapsed().as_secs_f32() * 90.0_f32.to_radians(),
-        );
-        let view = glam::Mat4::look_at_lh(
+        let model = glam::Mat4::from_rotation_z(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians());
+        let view = glam::Mat4::look_at_rh(
             glam::Vec3::new(2.0, 2.0, 2.0),
             glam::Vec3::ZERO,
-            glam::Vec3::new(0.0, 0.0, 1.0),
+            glam::Vec3::Z,
         );
-        let proj = glam::Mat4::perspective_lh(
+        let mut proj = glam::Mat4::perspective_rh(
             45.0_f32.to_radians(),
             self.width as f32 / self.height as f32,
             0.1,
             10.0,
         );
+        let mut proj_array = proj.to_cols_array_2d();
+        proj_array[1][1] *= -1.0;
+        proj = glam::Mat4::from_cols_array_2d(&proj_array);
 
         let uniform_buffer_data = UniformBufferData { model, view, proj };
 
@@ -1304,16 +1376,7 @@ impl VulkanState {
         }
         .unwrap();
 
-        Self::record_command_buffer(
-            &self.device,
-            self.command_buffers[self.frame_in_flight_index],
-            self.render_pass,
-            self.swapchain_framebuffers[image_index as usize],
-            self.swapchain_extent,
-            self.pipeline,
-            self.vertex_buffer,
-            self.index_buffer,
-        );
+        self.record_command_buffer(image_index);
 
         let wait_semaphores = [self.image_available_semaphores[self.frame_in_flight_index]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -1466,6 +1529,9 @@ impl Drop for VulkanState {
                 self.device
                     .free_memory(self.uniform_buffers_memory[i], None);
             }
+
+            self.device
+                .destroy_descriptor_pool(self.descriptor_pool, None);
 
             self.device
                 .destroy_descriptor_set_layout(self.descriptor_set_layout, None);

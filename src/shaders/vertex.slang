@@ -18,7 +18,7 @@ ConstantBuffer<UniformData> uniform_buffer;
 [shader("vertex")]
 VSOutput main(VSInput input) {
     VSOutput output;
-    output.position = mul(uniform_buffer.proj * uniform_buffer.view * uniform_buffer.model, float4(input.in_position, 0.0, 1.0));
+    output.position = mul(mul(mul(uniform_buffer.proj, uniform_buffer.view), uniform_buffer.model), float4(input.in_position, 0.0, 1.0));
     output.frag_color = input.in_color;
     return output;
 }
