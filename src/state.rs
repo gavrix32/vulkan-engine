@@ -8,7 +8,9 @@ use std::ffi;
 use std::ffi::{CStr, c_char};
 use std::mem::offset_of;
 use std::time::Instant;
+
 use crate::vulkan::instance::Instance;
+use crate::vulkan::surface::Surface;
 
 const ADAPTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -73,11 +75,9 @@ struct UniformBufferData {
     proj: glam::Mat4,
 }
 
-pub struct VulkanState {
+pub struct State {
+    surface: Surface,
     instance: Instance,
-
-    surface_instance: khr::surface::Instance,
-    surface_khr: vk::SurfaceKHR,
 
     adapter: vk::PhysicalDevice,
     device: ash::Device,
@@ -126,7 +126,7 @@ pub struct VulkanState {
     pub height: u32,
 }
 
-impl VulkanState {
+impl State {
     pub fn new(
         width: u32,
         height: u32,
@@ -134,12 +134,13 @@ impl VulkanState {
         window_handle: RawWindowHandle,
     ) -> Self {
         let instance = Instance::new(display_handle);
+        let surface = Surface::new(&instance, display_handle, window_handle);
 
-        let (surface_instance, surface_khr) =
-            Self::create_surface(&instance.entry, &instance.ash_instance, display_handle, window_handle);
-
-        let (adapter, queue_family_indices) =
-            Self::pick_adapter(&instance.ash_instance, &surface_instance, surface_khr);
+        let (adapter, queue_family_indices) = Self::pick_adapter(
+            &instance.ash_instance,
+            &surface.surface_instance,
+            surface.surface_khr,
+        );
         let (device, graphics_queue, present_queue) =
             Self::create_device(&instance.ash_instance, adapter, &queue_family_indices);
 
@@ -154,8 +155,8 @@ impl VulkanState {
             adapter,
             &device,
             &queue_family_indices,
-            &surface_instance,
-            surface_khr,
+            &surface.surface_instance,
+            surface.surface_khr,
             width,
             height,
         );
@@ -180,11 +181,21 @@ impl VulkanState {
 
         let command_pool = Self::create_command_pool(&device, &queue_family_indices);
 
-        let (vertex_buffer, vertex_buffer_memory) =
-            Self::create_vertex_buffer(&instance.ash_instance, adapter, &device, graphics_queue, command_pool);
+        let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(
+            &instance.ash_instance,
+            adapter,
+            &device,
+            graphics_queue,
+            command_pool,
+        );
 
-        let (index_buffer, index_buffer_memory) =
-            Self::create_index_buffer(&instance.ash_instance, adapter, &device, graphics_queue, command_pool);
+        let (index_buffer, index_buffer_memory) = Self::create_index_buffer(
+            &instance.ash_instance,
+            adapter,
+            &device,
+            graphics_queue,
+            command_pool,
+        );
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
             Self::create_uniform_buffers(&instance.ash_instance, adapter, &device);
@@ -204,9 +215,7 @@ impl VulkanState {
 
         Self {
             instance,
-
-            surface_instance,
-            surface_khr,
+            surface,
 
             adapter,
             queue_family_indices,
@@ -254,20 +263,6 @@ impl VulkanState {
             width,
             height,
         }
-    }
-
-    fn create_surface(
-        entry: &ash::Entry,
-        instance: &ash::Instance,
-        display_handle: RawDisplayHandle,
-        window_handle: RawWindowHandle,
-    ) -> (khr::surface::Instance, vk::SurfaceKHR) {
-        let surface = khr::surface::Instance::new(&entry, &instance);
-        let surface_khr = unsafe {
-            ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
-        }
-        .expect("Failed to create window surface");
-        (surface, surface_khr)
     }
 
     fn pick_adapter(
@@ -1123,8 +1118,11 @@ impl VulkanState {
 
         let command_buffer = self.command_buffers[self.frame_in_flight_index];
 
-        unsafe { self.device.begin_command_buffer(command_buffer, &command_buffer_begin_info) }
-            .expect("Failed to begin recording command buffer");
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &command_buffer_begin_info)
+        }
+        .expect("Failed to begin recording command buffer");
 
         unsafe {
             self.device.cmd_begin_render_pass(
@@ -1133,12 +1131,17 @@ impl VulkanState {
                 vk::SubpassContents::INLINE,
             );
 
-            self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+            self.device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline,
+            );
 
             self.device.cmd_set_viewport(command_buffer, 0, &viewports);
             self.device.cmd_set_scissor(command_buffer, 0, &scissors);
 
-            self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[self.vertex_buffer], &[0]);
+            self.device
+                .cmd_bind_vertex_buffers(command_buffer, 0, &[self.vertex_buffer], &[0]);
             self.device.cmd_bind_index_buffer(
                 command_buffer,
                 self.index_buffer,
@@ -1155,7 +1158,8 @@ impl VulkanState {
                 &[],
             );
 
-            self.device.cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
+            self.device
+                .cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
 
             self.device.cmd_end_render_pass(command_buffer);
         };
@@ -1193,8 +1197,8 @@ impl VulkanState {
             self.adapter,
             &self.device,
             &self.queue_family_indices,
-            &self.surface_instance,
-            self.surface_khr,
+            &self.surface.surface_instance,
+            self.surface.surface_khr,
             self.width,
             self.height,
         );
@@ -1214,7 +1218,8 @@ impl VulkanState {
     }
 
     fn update_uniform_buffer(&self) {
-        let model = glam::Mat4::from_rotation_z(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians());
+        let model =
+            glam::Mat4::from_rotation_z(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians());
         let view = glam::Mat4::look_at_rh(
             glam::Vec3::new(2.0, 2.0, 2.0),
             glam::Vec3::ZERO,
@@ -1437,7 +1442,7 @@ impl SwapchainSupportDetails {
     }
 }
 
-impl Drop for VulkanState {
+impl Drop for State {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().unwrap();
@@ -1483,9 +1488,6 @@ impl Drop for VulkanState {
             self.device.destroy_command_pool(self.command_pool, None);
 
             self.device.destroy_device(None);
-
-            self.surface_instance
-                .destroy_surface(self.surface_khr, None);
         };
     }
 }

@@ -1,7 +1,7 @@
 mod state;
 mod vulkan;
 
-use crate::state::VulkanState;
+use crate::state::State;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::ops::Add;
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ const HEIGHT: u32 = 600;
 #[derive(Default)]
 struct App {
     window: Option<Window>,
-    state: Option<VulkanState>,
+    state: Option<State>,
 }
 
 impl ApplicationHandler for App {
@@ -32,7 +32,7 @@ impl ApplicationHandler for App {
         let raw_window_handle = window.window_handle().unwrap().as_raw();
 
         self.window = Some(window);
-        self.state = Some(VulkanState::new(
+        self.state = Some(State::new(
             WIDTH,
             HEIGHT,
             raw_display_handle,

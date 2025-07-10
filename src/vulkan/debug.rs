@@ -9,7 +9,10 @@ pub fn setup_debug_messenger(
     entry: &ash::Entry,
     instance: &ash::Instance,
     create_info: &vk::DebugUtilsMessengerCreateInfoEXT,
-) -> (Option<ext::debug_utils::Instance>, Option<vk::DebugUtilsMessengerEXT>) {
+) -> (
+    Option<ext::debug_utils::Instance>,
+    Option<vk::DebugUtilsMessengerEXT>,
+) {
     if !ENABLE_VALIDATION_LAYERS {
         return (None, None);
     }
@@ -20,7 +23,7 @@ pub fn setup_debug_messenger(
             .create_debug_utils_messenger(&create_info, None)
             .expect("Failed to create debug utils messenger")
     };
-    
+
     (Some(debug_utils_instance), Some(debug_utils_messenger))
 }
 

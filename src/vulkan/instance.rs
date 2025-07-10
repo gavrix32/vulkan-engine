@@ -1,12 +1,12 @@
-use std::ffi::{c_char, CStr};
+use crate::vulkan::debug;
 use ash::{ext, vk};
 use raw_window_handle::RawDisplayHandle;
-use crate::vulkan::debug;
+use std::ffi::{CStr, c_char};
 
 pub struct Instance {
     pub entry: ash::Entry,
     pub ash_instance: ash::Instance,
-    
+
     debug_instance: Option<ext::debug_utils::Instance>,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
 }
@@ -90,10 +90,12 @@ fn check_validation_layer_support(entry: &ash::Entry) -> bool {
 impl Drop for Instance {
     fn drop(&mut self) {
         unsafe {
-            if let (Some(instance), Some(messenger)) = (self.debug_instance.take(), self.debug_messenger.take()) {
+            if let (Some(instance), Some(messenger)) =
+                (self.debug_instance.take(), self.debug_messenger.take())
+            {
                 instance.destroy_debug_utils_messenger(messenger, None);
             }
-            self.ash_instance.destroy_instance(None) 
+            self.ash_instance.destroy_instance(None)
         }
     }
 }

@@ -1,2 +1,3 @@
-pub mod instance;
 mod debug;
+pub mod instance;
+pub mod surface;
