@@ -1,5 +1,3 @@
-use crate::debug;
-use ash::ext;
 use ash::khr;
 use ash::util::Align;
 use ash::vk;
@@ -10,6 +8,7 @@ use std::ffi;
 use std::ffi::{CStr, c_char};
 use std::mem::offset_of;
 use std::time::Instant;
+use crate::vulkan::instance::Instance;
 
 const ADAPTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -75,9 +74,7 @@ struct UniformBufferData {
 }
 
 pub struct VulkanState {
-    _entry: ash::Entry,
-    instance: ash::Instance,
-    debug_messenger: Option<(ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
+    instance: Instance,
 
     surface_instance: khr::surface::Instance,
     surface_khr: vk::SurfaceKHR,
@@ -136,26 +133,15 @@ impl VulkanState {
         display_handle: RawDisplayHandle,
         window_handle: RawWindowHandle,
     ) -> Self {
-        let entry = unsafe { ash::Entry::load() }.expect("Failed to load Vulkan library");
-
-        let mut debug_utils_messenger_create_info = debug::create_debug_messenger_create_info();
-
-        let instance = Self::create_instance(
-            &entry,
-            display_handle,
-            &mut debug_utils_messenger_create_info,
-        );
-
-        let debug_messenger =
-            debug::setup_debug_messenger(&entry, &instance, &debug_utils_messenger_create_info);
+        let instance = Instance::new(display_handle);
 
         let (surface_instance, surface_khr) =
-            Self::create_surface(&entry, &instance, display_handle, window_handle);
+            Self::create_surface(&instance.entry, &instance.ash_instance, display_handle, window_handle);
 
         let (adapter, queue_family_indices) =
-            Self::pick_adapter(&instance, &surface_instance, surface_khr);
+            Self::pick_adapter(&instance.ash_instance, &surface_instance, surface_khr);
         let (device, graphics_queue, present_queue) =
-            Self::create_device(&instance, adapter, &queue_family_indices);
+            Self::create_device(&instance.ash_instance, adapter, &queue_family_indices);
 
         let (
             swapchain_device,
@@ -164,7 +150,7 @@ impl VulkanState {
             swapchain_image_format,
             swapchain_extent,
         ) = Self::create_swapchain(
-            &instance,
+            &instance.ash_instance,
             adapter,
             &device,
             &queue_family_indices,
@@ -195,13 +181,13 @@ impl VulkanState {
         let command_pool = Self::create_command_pool(&device, &queue_family_indices);
 
         let (vertex_buffer, vertex_buffer_memory) =
-            Self::create_vertex_buffer(&instance, adapter, &device, graphics_queue, command_pool);
+            Self::create_vertex_buffer(&instance.ash_instance, adapter, &device, graphics_queue, command_pool);
 
         let (index_buffer, index_buffer_memory) =
-            Self::create_index_buffer(&instance, adapter, &device, graphics_queue, command_pool);
+            Self::create_index_buffer(&instance.ash_instance, adapter, &device, graphics_queue, command_pool);
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
-            Self::create_uniform_buffers(&instance, adapter, &device);
+            Self::create_uniform_buffers(&instance.ash_instance, adapter, &device);
 
         let descriptor_pool = Self::create_descriptor_pool(&device);
         let descriptor_sets = Self::create_descriptor_sets(
@@ -217,9 +203,7 @@ impl VulkanState {
             Self::create_sync_objects(&device, swapchain_images.len());
 
         Self {
-            _entry: entry,
             instance,
-            debug_messenger,
 
             surface_instance,
             surface_khr,
@@ -270,70 +254,6 @@ impl VulkanState {
             width,
             height,
         }
-    }
-
-    fn create_instance(
-        entry: &ash::Entry,
-        display_handle: RawDisplayHandle,
-        debug_create_info: &mut vk::DebugUtilsMessengerCreateInfoEXT<'static>,
-    ) -> ash::Instance {
-        let app_info = vk::ApplicationInfo::default()
-            .application_name(c"Hello Triangle")
-            .application_version(vk::make_api_version(0, 1, 0, 0))
-            .engine_name(c"No Engine")
-            .engine_version(0)
-            .api_version(vk::make_api_version(0, 1, 3, 0));
-
-        let required_extensions = Self::get_required_extensions(display_handle);
-
-        let mut debug_instance_create_info = vk::InstanceCreateInfo::default()
-            .application_info(&app_info)
-            .enabled_extension_names(&required_extensions);
-
-        let layer_cstring_pointers = debug::get_validation_layer_cstring_pointers();
-
-        if debug::ENABLE_VALIDATION_LAYERS {
-            if !Self::check_validation_layer_support(&entry) {
-                panic!("validation layers requested, but not available!");
-            }
-            debug_instance_create_info = debug_instance_create_info
-                .enabled_layer_names(&layer_cstring_pointers.1)
-                .push_next(debug_create_info);
-        }
-
-        unsafe { entry.create_instance(&debug_instance_create_info, None) }
-            .expect("Failed to create VkInstance")
-    }
-
-    fn check_validation_layer_support(entry: &ash::Entry) -> bool {
-        let available_layers = unsafe { entry.enumerate_instance_layer_properties() }
-            .expect("Failed to enumerate layer properties");
-        for layer_name in debug::VALIDATION_LAYERS {
-            let mut layer_found = false;
-
-            for layer_properties in &available_layers {
-                let name = unsafe { CStr::from_ptr(layer_properties.layer_name.as_ptr()) };
-                if layer_name == name.to_str().unwrap() {
-                    layer_found = true;
-                    break;
-                }
-            }
-            if !layer_found {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn get_required_extensions(display_handle: RawDisplayHandle) -> Vec<*const c_char> {
-        let mut extensions = ash_window::enumerate_required_extensions(display_handle)
-            .unwrap()
-            .to_vec();
-
-        if debug::ENABLE_VALIDATION_LAYERS {
-            extensions.push(ext::debug_utils::NAME.as_ptr());
-        }
-        extensions
     }
 
     fn create_surface(
@@ -1269,7 +1189,7 @@ impl VulkanState {
             self.swapchain_image_format,
             self.swapchain_extent,
         ) = Self::create_swapchain(
-            &self.instance,
+            &self.instance.ash_instance,
             self.adapter,
             &self.device,
             &self.queue_family_indices,
@@ -1564,13 +1484,8 @@ impl Drop for VulkanState {
 
             self.device.destroy_device(None);
 
-            if let Some((instance, messenger)) = self.debug_messenger.take() {
-                instance.destroy_debug_utils_messenger(messenger, None);
-            }
-
             self.surface_instance
                 .destroy_surface(self.surface_khr, None);
-            self.instance.destroy_instance(None)
         };
     }
 }

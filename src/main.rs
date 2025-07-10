@@ -1,7 +1,7 @@
-mod debug;
-mod vulkan_state;
+mod state;
+mod vulkan;
 
-use crate::vulkan_state::VulkanState;
+use crate::state::VulkanState;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::ops::Add;
 use std::time::{Duration, Instant};
