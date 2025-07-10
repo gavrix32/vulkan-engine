@@ -5,14 +5,13 @@ use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::collections::HashSet;
 use std::ffi;
-use std::ffi::{CStr, c_char};
+use std::ffi::c_char;
 use std::mem::offset_of;
 use std::time::Instant;
-
+use crate::vulkan::adapter::{Adapter, ADAPTER_EXTENSIONS};
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 
-const ADAPTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 #[derive(Copy, Clone)]
@@ -76,13 +75,12 @@ struct UniformBufferData {
 }
 
 pub struct State {
+    adapter: Adapter,
     surface: Surface,
     instance: Instance,
 
-    adapter: vk::PhysicalDevice,
     device: ash::Device,
 
-    queue_family_indices: QueueFamilyIndices,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
 
@@ -135,14 +133,10 @@ impl State {
     ) -> Self {
         let instance = Instance::new(display_handle);
         let surface = Surface::new(&instance, display_handle, window_handle);
+        let adapter = Adapter::new(&instance, &surface);
 
-        let (adapter, queue_family_indices) = Self::pick_adapter(
-            &instance.ash_instance,
-            &surface.surface_instance,
-            surface.surface_khr,
-        );
         let (device, graphics_queue, present_queue) =
-            Self::create_device(&instance.ash_instance, adapter, &queue_family_indices);
+            Self::create_device(&instance.ash_instance, adapter.physical_device, &adapter.queue_family_indices);
 
         let (
             swapchain_device,
@@ -152,11 +146,10 @@ impl State {
             swapchain_extent,
         ) = Self::create_swapchain(
             &instance.ash_instance,
-            adapter,
+            adapter.physical_device,
             &device,
-            &queue_family_indices,
-            &surface.surface_instance,
-            surface.surface_khr,
+            &adapter.queue_family_indices,
+            &surface,
             width,
             height,
         );
@@ -179,11 +172,11 @@ impl State {
             swapchain_extent,
         );
 
-        let command_pool = Self::create_command_pool(&device, &queue_family_indices);
+        let command_pool = Self::create_command_pool(&device, &adapter.queue_family_indices);
 
         let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(
             &instance.ash_instance,
-            adapter,
+            adapter.physical_device,
             &device,
             graphics_queue,
             command_pool,
@@ -191,14 +184,14 @@ impl State {
 
         let (index_buffer, index_buffer_memory) = Self::create_index_buffer(
             &instance.ash_instance,
-            adapter,
+            adapter.physical_device,
             &device,
             graphics_queue,
             command_pool,
         );
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
-            Self::create_uniform_buffers(&instance.ash_instance, adapter, &device);
+            Self::create_uniform_buffers(&instance.ash_instance, adapter.physical_device, &device);
 
         let descriptor_pool = Self::create_descriptor_pool(&device);
         let descriptor_sets = Self::create_descriptor_sets(
@@ -214,11 +207,10 @@ impl State {
             Self::create_sync_objects(&device, swapchain_images.len());
 
         Self {
-            instance,
-            surface,
-
             adapter,
-            queue_family_indices,
+            surface,
+            instance,
+
             device,
 
             graphics_queue,
@@ -263,64 +255,6 @@ impl State {
             width,
             height,
         }
-    }
-
-    fn pick_adapter(
-        instance: &ash::Instance,
-        surface: &khr::surface::Instance,
-        surface_khr: vk::SurfaceKHR,
-    ) -> (vk::PhysicalDevice, QueueFamilyIndices) {
-        let adapters = unsafe { instance.enumerate_physical_devices() }
-            .expect("Failed to enumerate physical devices");
-        if adapters.len() == 0 {
-            panic!("Failed to find GPUs with Vulkan support");
-        }
-
-        for adapter in adapters {
-            let (adapter_suitable, queue_family_indices) =
-                Self::is_adapter_suitable(instance, adapter, surface, surface_khr);
-            if adapter_suitable {
-                return (adapter, queue_family_indices);
-            }
-        }
-        panic!("Failed to find a suitable GPU");
-    }
-
-    fn is_adapter_suitable(
-        instance: &ash::Instance,
-        adapter: vk::PhysicalDevice,
-        surface: &khr::surface::Instance,
-        surface_khr: vk::SurfaceKHR,
-    ) -> (bool, QueueFamilyIndices) {
-        let indices =
-            QueueFamilyIndices::find_queue_families(instance, adapter, surface, surface_khr);
-        let extensions_supported = Self::check_adapter_extensions_support(instance, adapter);
-        let mut swapchain_adequate = false;
-        if extensions_supported {
-            let swapchain_support =
-                SwapchainSupportDetails::query_swapchain_support(adapter, surface, surface_khr);
-            swapchain_adequate = !swapchain_support.formats.is_empty()
-                && !swapchain_support.present_modes.is_empty();
-        }
-        (
-            indices.is_complete() && extensions_supported && swapchain_adequate,
-            indices,
-        )
-    }
-
-    fn check_adapter_extensions_support(
-        instance: &ash::Instance,
-        adapter: vk::PhysicalDevice,
-    ) -> bool {
-        let available_extensions =
-            unsafe { instance.enumerate_device_extension_properties(adapter) }
-                .expect("Failed to enumerate adapter extension properties");
-        let mut required_extensions = HashSet::from(ADAPTER_EXTENSIONS);
-        for extension in available_extensions {
-            let extension_name_cstr = unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) };
-            required_extensions.remove(extension_name_cstr);
-        }
-        required_extensions.is_empty()
     }
 
     fn create_device(
@@ -408,8 +342,7 @@ impl State {
         adapter: vk::PhysicalDevice,
         device: &ash::Device,
         queue_family_indices: &QueueFamilyIndices,
-        surface: &khr::surface::Instance,
-        surface_khr: vk::SurfaceKHR,
+        surface: &Surface,
         width: u32,
         height: u32,
     ) -> (
@@ -420,7 +353,7 @@ impl State {
         vk::Extent2D,
     ) {
         let swapchain_support_details =
-            SwapchainSupportDetails::query_swapchain_support(adapter, surface, surface_khr);
+            SwapchainSupportDetails::query_swapchain_support(adapter, surface);
 
         let surface_format = Self::choose_surface_format(swapchain_support_details.formats);
         let present_mode = Self::choose_present_mode(swapchain_support_details.present_modes);
@@ -434,7 +367,7 @@ impl State {
         }
 
         let mut swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-            .surface(surface_khr)
+            .surface(surface.surface_khr)
             .min_image_count(image_count)
             .image_format(surface_format.format)
             .image_color_space(surface_format.color_space)
@@ -1194,11 +1127,10 @@ impl State {
             self.swapchain_extent,
         ) = Self::create_swapchain(
             &self.instance.ash_instance,
-            self.adapter,
+            self.adapter.physical_device,
             &self.device,
-            &self.queue_family_indices,
-            &self.surface.surface_instance,
-            self.surface.surface_khr,
+            &self.adapter.queue_family_indices,
+            &self.surface,
             self.width,
             self.height,
         );
@@ -1364,17 +1296,16 @@ impl State {
     }
 }
 
-struct QueueFamilyIndices {
-    graphics_family: Option<u32>,
-    present_family: Option<u32>,
+pub struct QueueFamilyIndices {
+    pub graphics_family: Option<u32>,
+    pub present_family: Option<u32>,
 }
 
 impl QueueFamilyIndices {
-    fn find_queue_families(
-        instance: &ash::Instance,
-        adapter: vk::PhysicalDevice,
-        surface: &khr::surface::Instance,
-        surface_khr: vk::SurfaceKHR,
+    pub(crate) fn find_queue_families(
+        instance: &Instance,
+        physical_device: vk::PhysicalDevice,
+        surface: &Surface,
     ) -> Self {
         let mut indices = Self {
             graphics_family: None,
@@ -1382,7 +1313,7 @@ impl QueueFamilyIndices {
         };
 
         let queue_families =
-            unsafe { instance.get_physical_device_queue_family_properties(adapter) };
+            unsafe { instance.ash_instance.get_physical_device_queue_family_properties(physical_device) };
 
         let mut i = 0;
         for queue_family in queue_families {
@@ -1391,7 +1322,7 @@ impl QueueFamilyIndices {
             }
 
             let present_support =
-                unsafe { surface.get_physical_device_surface_support(adapter, i, surface_khr) }
+                unsafe { surface.surface_instance.get_physical_device_surface_support(physical_device, i, surface.surface_khr) }
                     .expect("Failed to get adapter surface support");
             if present_support {
                 indices.present_family = Some(i);
@@ -1409,33 +1340,32 @@ impl QueueFamilyIndices {
         }
     }
 
-    fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         self.graphics_family.is_some() && self.present_family.is_some()
     }
 }
 
-struct SwapchainSupportDetails {
+pub(crate) struct SwapchainSupportDetails {
     capabilities: vk::SurfaceCapabilitiesKHR,
-    formats: Vec<vk::SurfaceFormatKHR>,
-    present_modes: Vec<vk::PresentModeKHR>,
+    pub(crate) formats: Vec<vk::SurfaceFormatKHR>,
+    pub(crate) present_modes: Vec<vk::PresentModeKHR>,
 }
 
 impl SwapchainSupportDetails {
-    fn query_swapchain_support(
+    pub(crate) fn query_swapchain_support(
         adapter: vk::PhysicalDevice,
-        surface: &khr::surface::Instance,
-        surface_khr: vk::SurfaceKHR,
+        surface: &Surface,
     ) -> Self {
         unsafe {
             Self {
-                capabilities: surface
-                    .get_physical_device_surface_capabilities(adapter, surface_khr)
+                capabilities: surface.surface_instance
+                    .get_physical_device_surface_capabilities(adapter, surface.surface_khr)
                     .expect("Failed to get adapter surface capabilities"),
-                formats: surface
-                    .get_physical_device_surface_formats(adapter, surface_khr)
+                formats: surface.surface_instance
+                    .get_physical_device_surface_formats(adapter, surface.surface_khr)
                     .expect("Failed to get adapter surface formats"),
-                present_modes: surface
-                    .get_physical_device_surface_present_modes(adapter, surface_khr)
+                present_modes: surface.surface_instance
+                    .get_physical_device_surface_present_modes(adapter, surface.surface_khr)
                     .expect("Failed to get adapter surface present modes"),
             }
         }
