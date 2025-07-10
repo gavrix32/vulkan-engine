@@ -5,7 +5,7 @@ use crate::state::QueueFamilyIndices;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 
-pub const ADAPTER_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
+pub const DEVICE_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 
 pub struct Adapter {
     pub physical_device: vk::PhysicalDevice,
@@ -41,9 +41,9 @@ fn is_physical_device_suitable(
 ) -> (bool, QueueFamilyIndices) {
     let indices =
         QueueFamilyIndices::find_queue_families(instance, physical_device, surface);
-    
+
     let extensions_supported = check_physical_device_extensions_support(instance, physical_device);
-    
+
     let mut swapchain_adequate = false;
     if extensions_supported {
         let swapchain_support =
@@ -64,9 +64,9 @@ fn check_physical_device_extensions_support(
     let available_extensions =
         unsafe { instance.ash_instance.enumerate_device_extension_properties(physical_device) }
             .expect("Failed to enumerate adapter extension properties");
-    
-    let mut required_extensions = HashSet::from(ADAPTER_EXTENSIONS);
-    
+
+    let mut required_extensions = HashSet::from(DEVICE_EXTENSIONS);
+
     for extension in available_extensions {
         let extension_name_cstr = unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) };
         required_extensions.remove(extension_name_cstr);

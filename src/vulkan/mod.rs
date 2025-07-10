@@ -1,4 +1,5 @@
+mod debug;
 pub mod instance;
 pub mod surface;
 pub mod adapter;
-mod debug;
+pub mod device;

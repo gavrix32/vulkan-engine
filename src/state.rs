@@ -3,12 +3,11 @@ use ash::util::Align;
 use ash::vk;
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-use std::collections::HashSet;
 use std::ffi;
-use std::ffi::c_char;
 use std::mem::offset_of;
 use std::time::Instant;
-use crate::vulkan::adapter::{Adapter, ADAPTER_EXTENSIONS};
+use crate::vulkan::adapter::Adapter;
+use crate::vulkan::device::Device;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 
@@ -75,14 +74,10 @@ struct UniformBufferData {
 }
 
 pub struct State {
+    device: Device,
     adapter: Adapter,
     surface: Surface,
     instance: Instance,
-
-    device: ash::Device,
-
-    graphics_queue: vk::Queue,
-    present_queue: vk::Queue,
 
     swapchain_device: khr::swapchain::Device,
     swapchain_khr: vk::SwapchainKHR,
@@ -134,9 +129,7 @@ impl State {
         let instance = Instance::new(display_handle);
         let surface = Surface::new(&instance, display_handle, window_handle);
         let adapter = Adapter::new(&instance, &surface);
-
-        let (device, graphics_queue, present_queue) =
-            Self::create_device(&instance.ash_instance, adapter.physical_device, &adapter.queue_family_indices);
+        let device = Device::new(&instance, &adapter);
 
         let (
             swapchain_device,
@@ -147,7 +140,7 @@ impl State {
         ) = Self::create_swapchain(
             &instance.ash_instance,
             adapter.physical_device,
-            &device,
+            &device.ash_device,
             &adapter.queue_family_indices,
             &surface,
             width,
@@ -155,66 +148,63 @@ impl State {
         );
 
         let swapchain_image_views =
-            Self::create_image_views(&swapchain_images, &swapchain_image_format, &device);
+            Self::create_image_views(&swapchain_images, &swapchain_image_format, &device.ash_device);
 
-        let render_pass = Self::create_render_pass(&device, swapchain_image_format);
+        let render_pass = Self::create_render_pass(&device.ash_device, swapchain_image_format);
 
-        let descriptor_set_layout = Self::create_descriptor_set_layout(&device);
+        let descriptor_set_layout = Self::create_descriptor_set_layout(&device.ash_device);
         let descriptor_set_layouts = [descriptor_set_layout];
 
         let (pipeline_layout, pipeline) =
-            Self::create_graphics_pipeline(&device, render_pass, &descriptor_set_layouts);
+            Self::create_graphics_pipeline(&device.ash_device, render_pass, &descriptor_set_layouts);
 
         let swapchain_framebuffers = Self::create_framebuffers(
-            &device,
+            &device.ash_device,
             &swapchain_image_views,
             render_pass,
             swapchain_extent,
         );
 
-        let command_pool = Self::create_command_pool(&device, &adapter.queue_family_indices);
+        let command_pool = Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
 
         let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(
             &instance.ash_instance,
             adapter.physical_device,
-            &device,
-            graphics_queue,
+            &device.ash_device,
+            device.graphics_queue,
             command_pool,
         );
 
         let (index_buffer, index_buffer_memory) = Self::create_index_buffer(
             &instance.ash_instance,
             adapter.physical_device,
-            &device,
-            graphics_queue,
+            &device.ash_device,
+            device.graphics_queue,
             command_pool,
         );
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
-            Self::create_uniform_buffers(&instance.ash_instance, adapter.physical_device, &device);
+            Self::create_uniform_buffers(&instance.ash_instance, adapter.physical_device, &device.ash_device);
 
-        let descriptor_pool = Self::create_descriptor_pool(&device);
+        let descriptor_pool = Self::create_descriptor_pool(&device.ash_device);
         let descriptor_sets = Self::create_descriptor_sets(
-            &device,
+            &device.ash_device,
             descriptor_set_layout,
             descriptor_pool,
             &uniform_buffers,
         );
 
-        let command_buffers = Self::create_command_buffers(&device, command_pool);
+        let command_buffers = Self::create_command_buffers(&device.ash_device, command_pool);
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
-            Self::create_sync_objects(&device, swapchain_images.len());
+            Self::create_sync_objects(&device.ash_device, swapchain_images.len());
 
         Self {
+            device,
             adapter,
             surface,
             instance,
 
-            device,
-
-            graphics_queue,
-            present_queue,
 
             swapchain_device,
             swapchain_khr,
@@ -257,44 +247,44 @@ impl State {
         }
     }
 
-    fn create_device(
-        instance: &ash::Instance,
-        adapter: vk::PhysicalDevice,
-        queue_family_indices: &QueueFamilyIndices,
-    ) -> (ash::Device, vk::Queue, vk::Queue) {
-        let queue_priority = 1.0f32;
-        let queue_priorities = [queue_priority];
-
-        let mut unique_queue_families = HashSet::new();
-        unique_queue_families.insert(queue_family_indices.graphics_family.unwrap());
-        unique_queue_families.insert(queue_family_indices.present_family.unwrap());
-
-        let mut queue_create_infos = Vec::new();
-
-        for queue_family in unique_queue_families {
-            let queue_create_info = vk::DeviceQueueCreateInfo::default()
-                .queue_family_index(queue_family)
-                .queue_priorities(&queue_priorities);
-            queue_create_infos.push(queue_create_info);
-        }
-
-        let adapter_extension_name_pointers: Vec<*const c_char> =
-            ADAPTER_EXTENSIONS.iter().map(|s| s.as_ptr()).collect();
-
-        let device_create_info = vk::DeviceCreateInfo::default()
-            .queue_create_infos(&queue_create_infos)
-            .enabled_extension_names(&*adapter_extension_name_pointers);
-
-        let device = unsafe { instance.create_device(adapter, &device_create_info, None) }
-            .expect("Failed to create device");
-
-        let graphics_queue =
-            unsafe { device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0) };
-        let present_queue =
-            unsafe { device.get_device_queue(queue_family_indices.present_family.unwrap(), 0) };
-
-        (device, graphics_queue, present_queue)
-    }
+    // fn create_device(
+    //     instance: &ash::Instance,
+    //     adapter: vk::PhysicalDevice,
+    //     queue_family_indices: &QueueFamilyIndices,
+    // ) -> (ash::Device, vk::Queue, vk::Queue) {
+    //     let queue_priority = 1.0f32;
+    //     let queue_priorities = [queue_priority];
+    //
+    //     let mut unique_queue_families = HashSet::new();
+    //     unique_queue_families.insert(queue_family_indices.graphics_family.unwrap());
+    //     unique_queue_families.insert(queue_family_indices.present_family.unwrap());
+    //
+    //     let mut queue_create_infos = Vec::new();
+    //
+    //     for queue_family in unique_queue_families {
+    //         let queue_create_info = vk::DeviceQueueCreateInfo::default()
+    //             .queue_family_index(queue_family)
+    //             .queue_priorities(&queue_priorities);
+    //         queue_create_infos.push(queue_create_info);
+    //     }
+    //
+    //     let adapter_extension_name_pointers: Vec<*const c_char> =
+    //         DEVICE_EXTENSIONS.iter().map(|s| s.as_ptr()).collect();
+    //
+    //     let device_create_info = vk::DeviceCreateInfo::default()
+    //         .queue_create_infos(&queue_create_infos)
+    //         .enabled_extension_names(&*adapter_extension_name_pointers);
+    //
+    //     let device = unsafe { instance.create_device(adapter, &device_create_info, None) }
+    //         .expect("Failed to create device");
+    //
+    //     let graphics_queue =
+    //         unsafe { device.get_device_queue(queue_family_indices.graphics_family.unwrap(), 0) };
+    //     let present_queue =
+    //         unsafe { device.get_device_queue(queue_family_indices.present_family.unwrap(), 0) };
+    //
+    //     (device, graphics_queue, present_queue)
+    // }
 
     fn choose_surface_format(surface_formats: Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
         for surface_format in &surface_formats {
@@ -1052,37 +1042,37 @@ impl State {
         let command_buffer = self.command_buffers[self.frame_in_flight_index];
 
         unsafe {
-            self.device
+            self.device.ash_device
                 .begin_command_buffer(command_buffer, &command_buffer_begin_info)
         }
         .expect("Failed to begin recording command buffer");
 
         unsafe {
-            self.device.cmd_begin_render_pass(
+            self.device.ash_device.cmd_begin_render_pass(
                 command_buffer,
                 &render_pass_begin_info,
                 vk::SubpassContents::INLINE,
             );
 
-            self.device.cmd_bind_pipeline(
+            self.device.ash_device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline,
             );
 
-            self.device.cmd_set_viewport(command_buffer, 0, &viewports);
-            self.device.cmd_set_scissor(command_buffer, 0, &scissors);
+            self.device.ash_device.cmd_set_viewport(command_buffer, 0, &viewports);
+            self.device.ash_device.cmd_set_scissor(command_buffer, 0, &scissors);
 
-            self.device
+            self.device.ash_device
                 .cmd_bind_vertex_buffers(command_buffer, 0, &[self.vertex_buffer], &[0]);
-            self.device.cmd_bind_index_buffer(
+            self.device.ash_device.cmd_bind_index_buffer(
                 command_buffer,
                 self.index_buffer,
                 vk::DeviceSize::default(),
                 vk::IndexType::UINT16,
             );
 
-            self.device.cmd_bind_descriptor_sets(
+            self.device.ash_device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
@@ -1091,22 +1081,22 @@ impl State {
                 &[],
             );
 
-            self.device
+            self.device.ash_device
                 .cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
 
-            self.device.cmd_end_render_pass(command_buffer);
+            self.device.ash_device.cmd_end_render_pass(command_buffer);
         };
 
-        unsafe { self.device.end_command_buffer(command_buffer) }
+        unsafe { self.device.ash_device.end_command_buffer(command_buffer) }
             .expect("Failed to end recording command buffer");
     }
 
     fn cleanup_swapchain(&self) {
         for framebuffer in &self.swapchain_framebuffers {
-            unsafe { self.device.destroy_framebuffer(*framebuffer, None) };
+            unsafe { self.device.ash_device.destroy_framebuffer(*framebuffer, None) };
         }
         for image_view in &self.swapchain_image_views {
-            unsafe { self.device.destroy_image_view(*image_view, None) };
+            unsafe { self.device.ash_device.destroy_image_view(*image_view, None) };
         }
         unsafe {
             self.swapchain_device
@@ -1115,7 +1105,7 @@ impl State {
     }
 
     fn recreate_swapchain(&mut self) {
-        unsafe { self.device.device_wait_idle() }.unwrap();
+        unsafe { self.device.ash_device.device_wait_idle() }.unwrap();
 
         self.cleanup_swapchain();
 
@@ -1128,7 +1118,7 @@ impl State {
         ) = Self::create_swapchain(
             &self.instance.ash_instance,
             self.adapter.physical_device,
-            &self.device,
+            &self.device.ash_device,
             &self.adapter.queue_family_indices,
             &self.surface,
             self.width,
@@ -1138,11 +1128,11 @@ impl State {
         self.swapchain_image_views = Self::create_image_views(
             &self.swapchain_images,
             &self.swapchain_image_format,
-            &self.device,
+            &self.device.ash_device,
         );
 
         self.swapchain_framebuffers = Self::create_framebuffers(
-            &self.device,
+            &self.device.ash_device,
             &self.swapchain_image_views,
             self.render_pass,
             self.swapchain_extent,
@@ -1181,7 +1171,7 @@ impl State {
 
     pub fn draw_frame(&mut self) {
         unsafe {
-            self.device.wait_for_fences(
+            self.device.ash_device.wait_for_fences(
                 &[self.in_flight_fences[self.frame_in_flight_index]],
                 true,
                 u64::MAX,
@@ -1220,13 +1210,13 @@ impl State {
         }
 
         unsafe {
-            self.device
+            self.device.ash_device
                 .reset_fences(&[self.in_flight_fences[self.frame_in_flight_index]])
         }
         .unwrap();
 
         unsafe {
-            self.device.reset_command_buffer(
+            self.device.ash_device.reset_command_buffer(
                 self.command_buffers[self.frame_in_flight_index],
                 vk::CommandBufferResetFlags::empty(),
             )
@@ -1250,8 +1240,8 @@ impl State {
         let submit_infos = [submit_info];
 
         unsafe {
-            self.device.queue_submit(
-                self.graphics_queue,
+            self.device.ash_device.queue_submit(
+                self.device.graphics_queue,
                 &submit_infos,
                 self.in_flight_fences[self.frame_in_flight_index],
             )
@@ -1268,7 +1258,7 @@ impl State {
 
         let present_result = unsafe {
             self.swapchain_device
-                .queue_present(self.present_queue, &present_info_khr)
+                .queue_present(self.device.present_queue, &present_info_khr)
         };
 
         match present_result {
@@ -1375,49 +1365,47 @@ impl SwapchainSupportDetails {
 impl Drop for State {
     fn drop(&mut self) {
         unsafe {
-            self.device.device_wait_idle().unwrap();
+            self.device.ash_device.device_wait_idle().unwrap();
 
             self.cleanup_swapchain();
 
             for i in 0..MAX_FRAMES_IN_FLIGHT {
-                self.device.destroy_buffer(self.uniform_buffers[i], None);
-                self.device
+                self.device.ash_device.destroy_buffer(self.uniform_buffers[i], None);
+                self.device.ash_device
                     .free_memory(self.uniform_buffers_memory[i], None);
             }
 
-            self.device
+            self.device.ash_device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
 
-            self.device
+            self.device.ash_device
                 .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
 
-            self.device.destroy_buffer(self.index_buffer, None);
-            self.device.free_memory(self.index_buffer_memory, None);
+            self.device.ash_device.destroy_buffer(self.index_buffer, None);
+            self.device.ash_device.free_memory(self.index_buffer_memory, None);
 
-            self.device.destroy_buffer(self.vertex_buffer, None);
-            self.device.free_memory(self.vertex_buffer_memory, None);
+            self.device.ash_device.destroy_buffer(self.vertex_buffer, None);
+            self.device.ash_device.free_memory(self.vertex_buffer_memory, None);
 
-            self.device.destroy_pipeline(self.pipeline, None);
-            self.device
+            self.device.ash_device.destroy_pipeline(self.pipeline, None);
+            self.device.ash_device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
 
-            self.device.destroy_render_pass(self.render_pass, None);
+            self.device.ash_device.destroy_render_pass(self.render_pass, None);
 
             for i in 0..MAX_FRAMES_IN_FLIGHT {
-                self.device
+                self.device.ash_device
                     .destroy_semaphore(self.image_available_semaphores[i], None);
 
-                self.device.destroy_fence(self.in_flight_fences[i], None);
+                self.device.ash_device.destroy_fence(self.in_flight_fences[i], None);
             }
 
             for i in 0..self.swapchain_images.len() {
-                self.device
+                self.device.ash_device
                     .destroy_semaphore(self.render_finished_semaphores[i], None);
             }
 
-            self.device.destroy_command_pool(self.command_pool, None);
-
-            self.device.destroy_device(None);
-        };
+            self.device.ash_device.destroy_command_pool(self.command_pool, None);
+        }
     }
 }
