@@ -4,6 +4,7 @@ use ash::{khr, vk};
 use crate::state::QueueFamilyIndices;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
+use crate::vulkan::swapchain;
 
 pub const DEVICE_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 
@@ -47,7 +48,7 @@ fn is_physical_device_suitable(
     let mut swapchain_adequate = false;
     if extensions_supported {
         let swapchain_support =
-            crate::state::SwapchainSupportDetails::query_swapchain_support(physical_device, surface);
+            swapchain::SupportDetails::query_support(physical_device, surface);
         swapchain_adequate = !swapchain_support.formats.is_empty()
             && !swapchain_support.present_modes.is_empty();
     }
