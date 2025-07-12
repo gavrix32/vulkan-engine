@@ -9,6 +9,7 @@ use ash::vk;
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::mem::offset_of;
+use std::sync::Arc;
 use std::time::Instant;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -74,26 +75,27 @@ struct UniformBufferData {
 }
 
 pub struct State {
+    uniform_buffers: Vec<Buffer>,
+    index_buffer: Buffer,
+    vertex_buffer: Buffer,
+
+    command_buffers: Vec<vk::CommandBuffer>,
+    command_pool: vk::CommandPool,
+
+    pipeline: vk::Pipeline,
+    pipeline_layout: vk::PipelineLayout,
+    descriptor_sets: Vec<vk::DescriptorSet>,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+
     swapchain: Swapchain,
     render_pass: vk::RenderPass,
-    device: Device,
+    device: Arc<Device>,
     adapter: Adapter,
     surface: Surface,
     instance: Instance,
 
-    descriptor_set_layout: vk::DescriptorSetLayout,
-    descriptor_pool: vk::DescriptorPool,
-    descriptor_sets: Vec<vk::DescriptorSet>,
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-
-    command_pool: vk::CommandPool,
-    command_buffers: Vec<vk::CommandBuffer>,
-
-    vertex_buffer: Buffer,
-    index_buffer: Buffer,
-    uniform_buffers: Vec<Buffer>,
-
+    ///////////////////////////
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
@@ -116,7 +118,7 @@ impl State {
         let instance = Instance::new(display_handle);
         let surface = Surface::new(&instance, display_handle, window_handle);
         let adapter = Adapter::new(&instance, &surface);
-        let device = Device::new(&instance, &adapter);
+        let device = Arc::new(Device::new(&instance, &adapter));
         let render_pass = Self::create_render_pass(
             &device.ash_device,
             Swapchain::get_format(&adapter, &surface),
@@ -124,7 +126,7 @@ impl State {
         let swapchain = Swapchain::new(
             &instance,
             &adapter,
-            &device,
+            device.clone(),
             &surface,
             render_pass,
             width,
@@ -146,7 +148,7 @@ impl State {
         let vertex_buffer = Self::create_vertex_buffer(
             &instance,
             &adapter,
-            &device,
+            device.clone(),
             device.graphics_queue,
             command_pool,
         );
@@ -154,12 +156,12 @@ impl State {
         let index_buffer = Self::create_index_buffer(
             &instance,
             &adapter,
-            &device,
+            device.clone(),
             device.graphics_queue,
             command_pool,
         );
 
-        let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, &device);
+        let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, device.clone());
 
         let descriptor_pool = Self::create_descriptor_pool(&device.ash_device);
         let descriptor_sets = Self::create_descriptor_sets(
@@ -395,7 +397,7 @@ impl State {
     fn create_vertex_buffer(
         instance: &Instance,
         adapter: &Adapter,
-        device: &Device,
+        device: Arc<Device>,
         graphics_queue: vk::Queue,
         command_pool: vk::CommandPool,
     ) -> Buffer {
@@ -404,33 +406,33 @@ impl State {
         let mut staging_buffer = Buffer::new(
             instance,
             adapter,
-            device,
+            device.clone(),
             size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
 
-        staging_buffer.map_memory(device);
+        staging_buffer.map_memory();
         let data_ptr = staging_buffer.p_data.unwrap();
 
         let mut vertex_align =
             unsafe { Align::new(data_ptr, align_of::<Vertex>() as vk::DeviceSize, size) };
         vertex_align.copy_from_slice(&VERTICES);
 
-        staging_buffer.unmap_memory(device);
+        staging_buffer.unmap_memory();
 
         let vertex_buffer = Buffer::new(
             instance,
             adapter,
-            device,
+            device.clone(),
             size,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
 
-        staging_buffer.copy(device, graphics_queue, &vertex_buffer, command_pool);
+        staging_buffer.copy(graphics_queue, &vertex_buffer, command_pool);
 
-        staging_buffer.destroy(device);
+        staging_buffer.destroy();
 
         vertex_buffer
     }
@@ -438,7 +440,7 @@ impl State {
     fn create_index_buffer(
         instance: &Instance,
         adapter: &Adapter,
-        device: &Device,
+        device: Arc<Device>,
         graphics_queue: vk::Queue,
         command_pool: vk::CommandPool,
     ) -> Buffer {
@@ -447,33 +449,33 @@ impl State {
         let mut staging_buffer = Buffer::new(
             instance,
             adapter,
-            device,
+            device.clone(),
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
 
-        staging_buffer.map_memory(device);
+        staging_buffer.map_memory();
         let data_ptr = staging_buffer.p_data.unwrap();
 
         let mut vertex_align =
             unsafe { Align::new(data_ptr, align_of::<u16>() as vk::DeviceSize, buffer_size) };
         vertex_align.copy_from_slice(&INDICES);
 
-        staging_buffer.unmap_memory(device);
+        staging_buffer.unmap_memory();
 
         let index_buffer = Buffer::new(
             instance,
             adapter,
-            device,
+            device.clone(),
             buffer_size,
             vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
 
-        staging_buffer.copy(device, graphics_queue, &index_buffer, command_pool);
+        staging_buffer.copy(graphics_queue, &index_buffer, command_pool);
 
-        staging_buffer.destroy(device);
+        staging_buffer.destroy();
 
         index_buffer
     }
@@ -481,7 +483,7 @@ impl State {
     fn create_uniform_buffers(
         instance: &Instance,
         adapter: &Adapter,
-        device: &Device,
+        device: Arc<Device>,
     ) -> Vec<Buffer> {
         let buffer_size = size_of::<UniformBufferData>() as vk::DeviceSize;
 
@@ -491,12 +493,12 @@ impl State {
             let mut uniform_buffer = Buffer::new(
                 instance,
                 adapter,
-                device,
+                device.clone(),
                 buffer_size,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             );
-            uniform_buffer.map_memory(device);
+            uniform_buffer.map_memory();
             uniform_buffers.push(uniform_buffer);
         }
 
@@ -764,7 +766,6 @@ impl State {
                 self.swapchain.recreate(
                     &self.instance,
                     &self.adapter,
-                    &self.device,
                     &self.surface,
                     self.render_pass,
                     self.width,
@@ -836,7 +837,6 @@ impl State {
                     self.swapchain.recreate(
                         &self.instance,
                         &self.adapter,
-                        &self.device,
                         &self.surface,
                         self.render_pass,
                         self.width,
@@ -849,7 +849,6 @@ impl State {
                 self.swapchain.recreate(
                     &self.instance,
                     &self.adapter,
-                    &self.device,
                     &self.surface,
                     self.render_pass,
                     self.width,
@@ -866,7 +865,6 @@ impl State {
             self.swapchain.recreate(
                 &self.instance,
                 &self.adapter,
-                &self.device,
                 &self.surface,
                 self.render_pass,
                 self.width,
@@ -938,10 +936,8 @@ impl Drop for State {
         unsafe {
             self.device.ash_device.device_wait_idle().unwrap();
 
-            self.swapchain.cleanup(&self.device);
-
             for i in 0..MAX_FRAMES_IN_FLIGHT {
-                self.uniform_buffers[i].destroy(&self.device);
+                self.uniform_buffers[i].destroy();
             }
 
             self.device
@@ -952,8 +948,8 @@ impl Drop for State {
                 .ash_device
                 .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
 
-            self.index_buffer.destroy(&self.device);
-            self.vertex_buffer.destroy(&self.device);
+            self.index_buffer.destroy();
+            self.vertex_buffer.destroy();
 
             self.device.ash_device.destroy_pipeline(self.pipeline, None);
             self.device

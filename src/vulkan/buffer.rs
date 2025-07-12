@@ -3,8 +3,10 @@ use crate::vulkan::device::Device;
 use crate::vulkan::instance::Instance;
 use ash::vk;
 use std::ffi;
+use std::sync::Arc;
 
 pub struct Buffer {
+    device: Arc<Device>,
     pub vk_buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub size: vk::DeviceSize,
@@ -15,7 +17,7 @@ impl Buffer {
     pub fn new(
         instance: &Instance,
         adapter: &Adapter,
-        device: &Device,
+        device: Arc<Device>,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         memory_flags: vk::MemoryPropertyFlags,
@@ -51,6 +53,7 @@ impl Buffer {
             .expect("Failed to bind buffer memory");
 
         Self {
+            device,
             vk_buffer: buffer,
             memory,
             size,
@@ -60,7 +63,6 @@ impl Buffer {
 
     pub fn copy(
         &self,
-        device: &Device,
         graphics_queue: vk::Queue,
         dst_buffer: &Self,
         command_pool: vk::CommandPool,
@@ -73,7 +75,7 @@ impl Buffer {
             .command_buffer_count(command_buffers.capacity() as u32);
 
         command_buffers = unsafe {
-            device
+            self.device
                 .ash_device
                 .allocate_command_buffers(&command_buffer_allocate_info)
         }
@@ -83,7 +85,7 @@ impl Buffer {
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
         unsafe {
-            device
+            self.device
                 .ash_device
                 .begin_command_buffer(command_buffers[0], &command_buffer_begin_info)
         }
@@ -92,43 +94,51 @@ impl Buffer {
         let copy_region = vk::BufferCopy::default().size(self.size);
 
         unsafe {
-            device.ash_device.cmd_copy_buffer(
+            self.device.ash_device.cmd_copy_buffer(
                 command_buffers[0],
                 self.vk_buffer,
                 dst_buffer.vk_buffer,
                 &[copy_region],
             );
-            device.ash_device.end_command_buffer(command_buffers[0])
+            self.device
+                .ash_device
+                .end_command_buffer(command_buffers[0])
         }
         .expect("Failed to end recording command buffer");
 
         let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
 
         unsafe {
-            device
+            self.device
                 .ash_device
                 .queue_submit(graphics_queue, &[submit_info], vk::Fence::null())
                 .unwrap();
-            device.ash_device.queue_wait_idle(graphics_queue).unwrap();
-            device
+            self.device
+                .ash_device
+                .queue_wait_idle(graphics_queue)
+                .unwrap();
+            self.device
                 .ash_device
                 .free_command_buffers(command_pool, &command_buffers);
         }
     }
 
-    pub fn map_memory(&mut self, device: &Device) {
+    pub fn map_memory(&mut self) {
         self.p_data = Some(
             unsafe {
-                device
-                    .ash_device
-                    .map_memory(self.memory, 0, self.size, vk::MemoryMapFlags::empty())
+                self.device.ash_device.map_memory(
+                    self.memory,
+                    0,
+                    self.size,
+                    vk::MemoryMapFlags::empty(),
+                )
             }
             .expect("Failed to map staging buffer memory"),
         );
     }
 
-    pub fn unmap_memory(&self, device: &Device) {
-        unsafe { device.ash_device.unmap_memory(self.memory) };
+    pub fn unmap_memory(&self) {
+        unsafe { self.device.ash_device.unmap_memory(self.memory) };
     }
 
     fn find_memory_type(
@@ -154,10 +164,10 @@ impl Buffer {
         panic!("Failed to find suitable memory type");
     }
 
-    pub fn destroy(&self, device: &Device) {
+    pub fn destroy(&self) {
         unsafe {
-            device.ash_device.destroy_buffer(self.vk_buffer, None);
-            device.ash_device.free_memory(self.memory, None);
+            self.device.ash_device.destroy_buffer(self.vk_buffer, None);
+            self.device.ash_device.free_memory(self.memory, None);
         }
     }
 }
