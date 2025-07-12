@@ -1,4 +1,5 @@
 use crate::vulkan::adapter::Adapter;
+use crate::vulkan::buffer::Buffer;
 use crate::vulkan::device::Device;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
@@ -7,7 +8,6 @@ use ash::util::Align;
 use ash::vk;
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-use std::ffi;
 use std::mem::offset_of;
 use std::time::Instant;
 
@@ -90,15 +90,9 @@ pub struct State {
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
 
-    vertex_buffer: vk::Buffer,
-    vertex_buffer_memory: vk::DeviceMemory,
-
-    index_buffer: vk::Buffer,
-    index_buffer_memory: vk::DeviceMemory,
-
-    uniform_buffers: Vec<vk::Buffer>,
-    uniform_buffers_memory: Vec<vk::DeviceMemory>,
-    uniform_buffers_mapped: Vec<*mut ffi::c_void>,
+    vertex_buffer: Buffer,
+    index_buffer: Buffer,
+    uniform_buffers: Vec<Buffer>,
 
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
@@ -149,28 +143,23 @@ impl State {
         let command_pool =
             Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
 
-        let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(
-            &instance.ash_instance,
-            adapter.physical_device,
-            &device.ash_device,
+        let vertex_buffer = Self::create_vertex_buffer(
+            &instance,
+            &adapter,
+            &device,
             device.graphics_queue,
             command_pool,
         );
 
-        let (index_buffer, index_buffer_memory) = Self::create_index_buffer(
-            &instance.ash_instance,
-            adapter.physical_device,
-            &device.ash_device,
+        let index_buffer = Self::create_index_buffer(
+            &instance,
+            &adapter,
+            &device,
             device.graphics_queue,
             command_pool,
         );
 
-        let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
-            Self::create_uniform_buffers(
-                &instance.ash_instance,
-                adapter.physical_device,
-                &device.ash_device,
-            );
+        let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, &device);
 
         let descriptor_pool = Self::create_descriptor_pool(&device.ash_device);
         let descriptor_sets = Self::create_descriptor_sets(
@@ -203,14 +192,8 @@ impl State {
             command_buffers,
 
             vertex_buffer,
-            vertex_buffer_memory,
-
             index_buffer,
-            index_buffer_memory,
-
             uniform_buffers,
-            uniform_buffers_memory,
-            uniform_buffers_mapped,
 
             image_available_semaphores,
             render_finished_semaphores,
@@ -409,114 +392,16 @@ impl State {
             .expect("Failed to create command pool")
     }
 
-    fn find_memory_type(
-        instance: &ash::Instance,
-        adapter: vk::PhysicalDevice,
-        type_filter: u32,
-        properties: vk::MemoryPropertyFlags,
-    ) -> u32 {
-        let memory_properties = unsafe { instance.get_physical_device_memory_properties(adapter) };
-
-        for i in 0..memory_properties.memory_type_count {
-            if (type_filter & (1 << i) != 0)
-                && memory_properties.memory_types[i as usize].property_flags & properties
-                    == properties
-            {
-                return i;
-            }
-        }
-        panic!("Failed to find suitable memory type");
-    }
-
-    fn create_buffer(
-        instance: &ash::Instance,
-        adapter: vk::PhysicalDevice,
-        device: &ash::Device,
-        size: vk::DeviceSize,
-        usage: vk::BufferUsageFlags,
-        memory_flags: vk::MemoryPropertyFlags,
-    ) -> (vk::Buffer, vk::DeviceMemory) {
-        let buffer_create_info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let vertex_buffer = unsafe { device.create_buffer(&buffer_create_info, None) }
-            .expect("Failed to create buffer");
-
-        let memory_requirements = unsafe { device.get_buffer_memory_requirements(vertex_buffer) };
-
-        let memory_allocate_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(memory_requirements.size)
-            .memory_type_index(Self::find_memory_type(
-                instance,
-                adapter,
-                memory_requirements.memory_type_bits,
-                memory_flags,
-            ));
-
-        let vertex_buffer_memory = unsafe { device.allocate_memory(&memory_allocate_info, None) }
-            .expect("Failed to allocate buffer memory");
-
-        unsafe { device.bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0) }
-            .expect("Failed to bind buffer memory");
-
-        (vertex_buffer, vertex_buffer_memory)
-    }
-
-    fn copy_buffer(
-        device: &ash::Device,
-        graphics_queue: vk::Queue,
-        src_buffer: vk::Buffer,
-        dst_buffer: vk::Buffer,
-        size: vk::DeviceSize,
-        command_pool: vk::CommandPool,
-    ) {
-        let mut command_buffers: Vec<vk::CommandBuffer> = Vec::with_capacity(1);
-
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(command_buffers.capacity() as u32);
-
-        command_buffers = unsafe { device.allocate_command_buffers(&command_buffer_allocate_info) }
-            .expect("Failed to allocate command buffers");
-
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-        unsafe { device.begin_command_buffer(command_buffers[0], &command_buffer_begin_info) }
-            .expect("Failed to begin recording command buffer");
-
-        let copy_region = vk::BufferCopy::default().size(size);
-
-        unsafe {
-            device.cmd_copy_buffer(command_buffers[0], src_buffer, dst_buffer, &[copy_region]);
-            device.end_command_buffer(command_buffers[0])
-        }
-        .expect("Failed to end recording command buffer");
-
-        let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
-
-        unsafe {
-            device
-                .queue_submit(graphics_queue, &[submit_info], vk::Fence::null())
-                .unwrap();
-            device.queue_wait_idle(graphics_queue).unwrap();
-            device.free_command_buffers(command_pool, &command_buffers);
-        }
-    }
-
     fn create_vertex_buffer(
-        instance: &ash::Instance,
-        adapter: vk::PhysicalDevice,
-        device: &ash::Device,
+        instance: &Instance,
+        adapter: &Adapter,
+        device: &Device,
         graphics_queue: vk::Queue,
         command_pool: vk::CommandPool,
-    ) -> (vk::Buffer, vk::DeviceMemory) {
+    ) -> Buffer {
         let size = (size_of::<Vertex>() * VERTICES.len()) as vk::DeviceSize;
 
-        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(
+        let mut staging_buffer = Buffer::new(
             instance,
             adapter,
             device,
@@ -525,18 +410,16 @@ impl State {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
 
-        let data_ptr = unsafe {
-            device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())
-        }
-        .expect("Failed to map staging buffer memory");
+        staging_buffer.map_memory(device);
+        let data_ptr = staging_buffer.p_data.unwrap();
 
         let mut vertex_align =
             unsafe { Align::new(data_ptr, align_of::<Vertex>() as vk::DeviceSize, size) };
         vertex_align.copy_from_slice(&VERTICES);
 
-        unsafe { device.unmap_memory(staging_buffer_memory) };
+        staging_buffer.unmap_memory(device);
 
-        let (vertex_buffer, vertex_buffer_memory) = Self::create_buffer(
+        let vertex_buffer = Buffer::new(
             instance,
             adapter,
             device,
@@ -545,33 +428,23 @@ impl State {
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
 
-        Self::copy_buffer(
-            device,
-            graphics_queue,
-            staging_buffer,
-            vertex_buffer,
-            size,
-            command_pool,
-        );
+        staging_buffer.copy(device, graphics_queue, &vertex_buffer, command_pool);
 
-        unsafe {
-            device.destroy_buffer(staging_buffer, None);
-            device.free_memory(staging_buffer_memory, None);
-        }
+        staging_buffer.destroy(device);
 
-        (vertex_buffer, vertex_buffer_memory)
+        vertex_buffer
     }
 
     fn create_index_buffer(
-        instance: &ash::Instance,
-        adapter: vk::PhysicalDevice,
-        device: &ash::Device,
+        instance: &Instance,
+        adapter: &Adapter,
+        device: &Device,
         graphics_queue: vk::Queue,
         command_pool: vk::CommandPool,
-    ) -> (vk::Buffer, vk::DeviceMemory) {
+    ) -> Buffer {
         let buffer_size = (size_of::<u16>() * INDICES.len()) as vk::DeviceSize;
 
-        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(
+        let mut staging_buffer = Buffer::new(
             instance,
             adapter,
             device,
@@ -580,23 +453,16 @@ impl State {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
 
-        let data_ptr = unsafe {
-            device.map_memory(
-                staging_buffer_memory,
-                0,
-                buffer_size,
-                vk::MemoryMapFlags::empty(),
-            )
-        }
-        .expect("Failed to map staging buffer memory");
+        staging_buffer.map_memory(device);
+        let data_ptr = staging_buffer.p_data.unwrap();
 
         let mut vertex_align =
             unsafe { Align::new(data_ptr, align_of::<u16>() as vk::DeviceSize, buffer_size) };
         vertex_align.copy_from_slice(&INDICES);
 
-        unsafe { device.unmap_memory(staging_buffer_memory) };
+        staging_buffer.unmap_memory(device);
 
-        let (index_buffer, index_buffer_memory) = Self::create_buffer(
+        let index_buffer = Buffer::new(
             instance,
             adapter,
             device,
@@ -605,40 +471,24 @@ impl State {
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
 
-        Self::copy_buffer(
-            device,
-            graphics_queue,
-            staging_buffer,
-            index_buffer,
-            buffer_size,
-            command_pool,
-        );
+        staging_buffer.copy(device, graphics_queue, &index_buffer, command_pool);
 
-        unsafe {
-            device.destroy_buffer(staging_buffer, None);
-            device.free_memory(staging_buffer_memory, None);
-        }
+        staging_buffer.destroy(device);
 
-        (index_buffer, index_buffer_memory)
+        index_buffer
     }
 
     fn create_uniform_buffers(
-        instance: &ash::Instance,
-        adapter: vk::PhysicalDevice,
-        device: &ash::Device,
-    ) -> (
-        Vec<vk::Buffer>,
-        Vec<vk::DeviceMemory>,
-        Vec<*mut ffi::c_void>,
-    ) {
+        instance: &Instance,
+        adapter: &Adapter,
+        device: &Device,
+    ) -> Vec<Buffer> {
         let buffer_size = size_of::<UniformBufferData>() as vk::DeviceSize;
 
-        let mut uniform_buffers: Vec<vk::Buffer> = Vec::new();
-        let mut uniform_buffers_memory: Vec<vk::DeviceMemory> = Vec::new();
-        let mut uniform_buffers_mapped: Vec<*mut ffi::c_void> = Vec::new();
+        let mut uniform_buffers: Vec<Buffer> = Vec::new();
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let (buffer, buffer_memory) = Self::create_buffer(
+            let mut uniform_buffer = Buffer::new(
                 instance,
                 adapter,
                 device,
@@ -646,22 +496,11 @@ impl State {
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             );
-            uniform_buffers.push(buffer);
-            uniform_buffers_memory.push(buffer_memory);
-
-            uniform_buffers_mapped.push(
-                unsafe {
-                    device.map_memory(buffer_memory, 0, buffer_size, vk::MemoryMapFlags::empty())
-                }
-                .expect("Failed to map uniform buffer memory"),
-            );
+            uniform_buffer.map_memory(device);
+            uniform_buffers.push(uniform_buffer);
         }
 
-        (
-            uniform_buffers,
-            uniform_buffers_memory,
-            uniform_buffers_mapped,
-        )
+        uniform_buffers
     }
 
     fn create_descriptor_pool(device: &ash::Device) -> vk::DescriptorPool {
@@ -682,7 +521,7 @@ impl State {
         device: &ash::Device,
         descriptor_set_layout: vk::DescriptorSetLayout,
         descriptor_pool: vk::DescriptorPool,
-        uniform_buffers: &Vec<vk::Buffer>,
+        uniform_buffers: &Vec<Buffer>,
     ) -> Vec<vk::DescriptorSet> {
         let mut descriptor_set_layouts = Vec::new();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
@@ -699,7 +538,7 @@ impl State {
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let descriptor_buffer_info = vk::DescriptorBufferInfo::default()
-                .buffer(uniform_buffers[i])
+                .buffer(uniform_buffers[i].vk_buffer)
                 .offset(0)
                 .range(vk::WHOLE_SIZE);
             let descriptor_buffer_infos = [descriptor_buffer_info];
@@ -837,12 +676,12 @@ impl State {
             self.device.ash_device.cmd_bind_vertex_buffers(
                 command_buffer,
                 0,
-                &[self.vertex_buffer],
+                &[self.vertex_buffer.vk_buffer],
                 &[0],
             );
             self.device.ash_device.cmd_bind_index_buffer(
                 command_buffer,
-                self.index_buffer,
+                self.index_buffer.vk_buffer,
                 vk::DeviceSize::default(),
                 vk::IndexType::UINT16,
             );
@@ -894,7 +733,9 @@ impl State {
 
         let mut uniform_align = unsafe {
             Align::new(
-                self.uniform_buffers_mapped[self.frame_in_flight_index],
+                self.uniform_buffers[self.frame_in_flight_index]
+                    .p_data
+                    .unwrap(),
                 align_of::<f32>() as vk::DeviceSize,
                 size_of::<UniformBufferData>() as vk::DeviceSize,
             )
@@ -1100,12 +941,7 @@ impl Drop for State {
             self.swapchain.cleanup(&self.device);
 
             for i in 0..MAX_FRAMES_IN_FLIGHT {
-                self.device
-                    .ash_device
-                    .destroy_buffer(self.uniform_buffers[i], None);
-                self.device
-                    .ash_device
-                    .free_memory(self.uniform_buffers_memory[i], None);
+                self.uniform_buffers[i].destroy(&self.device);
             }
 
             self.device
@@ -1116,19 +952,8 @@ impl Drop for State {
                 .ash_device
                 .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
 
-            self.device
-                .ash_device
-                .destroy_buffer(self.index_buffer, None);
-            self.device
-                .ash_device
-                .free_memory(self.index_buffer_memory, None);
-
-            self.device
-                .ash_device
-                .destroy_buffer(self.vertex_buffer, None);
-            self.device
-                .ash_device
-                .free_memory(self.vertex_buffer_memory, None);
+            self.index_buffer.destroy(&self.device);
+            self.vertex_buffer.destroy(&self.device);
 
             self.device.ash_device.destroy_pipeline(self.pipeline, None);
             self.device
