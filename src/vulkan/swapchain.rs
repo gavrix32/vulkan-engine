@@ -1,8 +1,9 @@
-use ash::{khr, vk};
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::device::Device;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
+use ash::{khr, vk};
+use log::warn;
 
 pub struct Swapchain {
     pub swapchain_device: khr::swapchain::Device,
@@ -14,9 +15,16 @@ pub struct Swapchain {
 }
 
 impl Swapchain {
-    pub fn new(instance: &Instance, adapter: &Adapter, device: &Device, surface: &Surface, render_pass: vk::RenderPass, width: u32, height: u32) -> Self {
-        let support_details =
-            SupportDetails::query_support(adapter.physical_device, surface);
+    pub fn new(
+        instance: &Instance,
+        adapter: &Adapter,
+        device: &Device,
+        surface: &Surface,
+        render_pass: vk::RenderPass,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let support_details = SupportDetails::query_support(adapter.physical_device, surface);
 
         let surface_format = choose_surface_format(support_details.formats);
         let present_mode = choose_present_mode(support_details.present_modes);
@@ -48,16 +56,17 @@ impl Swapchain {
             adapter.queue_family_indices.present_family.unwrap(),
         ];
 
-        if adapter.queue_family_indices.graphics_family != adapter.queue_family_indices.present_family {
-            create_info =
-                create_info.image_sharing_mode(vk::SharingMode::CONCURRENT);
+        if adapter.queue_family_indices.graphics_family
+            != adapter.queue_family_indices.present_family
+        {
+            create_info = create_info.image_sharing_mode(vk::SharingMode::CONCURRENT);
             create_info = create_info.queue_family_indices(&indices);
         } else {
-            create_info =
-                create_info.image_sharing_mode(vk::SharingMode::EXCLUSIVE);
+            create_info = create_info.image_sharing_mode(vk::SharingMode::EXCLUSIVE);
         }
 
-        let swapchain_device = khr::swapchain::Device::new(&instance.ash_instance, &device.ash_device);
+        let swapchain_device =
+            khr::swapchain::Device::new(&instance.ash_instance, &device.ash_device);
         let swapchain_khr = unsafe { swapchain_device.create_swapchain(&create_info, None) }
             .expect("Failed to create swapchain");
         let images = unsafe { swapchain_device.get_swapchain_images(swapchain_khr) }
@@ -88,18 +97,40 @@ impl Swapchain {
             unsafe { device.ash_device.destroy_image_view(*image_view, None) };
         }
         unsafe {
-            self.swapchain_device.destroy_swapchain(self.swapchain_khr, None)
+            self.swapchain_device
+                .destroy_swapchain(self.swapchain_khr, None)
         };
     }
 
-    pub fn recreate(&mut self, instance: &Instance, adapter: &Adapter, device: &Device, surface: &Surface, render_pass: vk::RenderPass, width: u32, height: u32) {
+    pub fn recreate(
+        &mut self,
+        instance: &Instance,
+        adapter: &Adapter,
+        device: &Device,
+        surface: &Surface,
+        render_pass: vk::RenderPass,
+        width: u32,
+        height: u32,
+    ) {
         unsafe { device.ash_device.device_wait_idle() }.unwrap();
 
         self.cleanup(device);
-        *self = Self::new(instance, adapter, device, surface, render_pass, width, height);
+        *self = Self::new(
+            instance,
+            adapter,
+            device,
+            surface,
+            render_pass,
+            width,
+            height,
+        );
     }
 
-    fn create_image_views(swapchain_images: &Vec<vk::Image>, swapchain_image_format: vk::Format, device: &Device) -> Vec<vk::ImageView> {
+    fn create_image_views(
+        swapchain_images: &Vec<vk::Image>,
+        swapchain_image_format: vk::Format,
+        device: &Device,
+    ) -> Vec<vk::ImageView> {
         let mut image_views = Vec::new();
 
         for i in 0..swapchain_images.len() {
@@ -123,14 +154,23 @@ impl Swapchain {
                         .layer_count(1),
                 );
 
-            let image_view = unsafe { device.ash_device.create_image_view(&image_view_create_info, None) }
-                .expect("Failed to create image views");
+            let image_view = unsafe {
+                device
+                    .ash_device
+                    .create_image_view(&image_view_create_info, None)
+            }
+            .expect("Failed to create image views");
             image_views.push(image_view)
         }
         image_views
     }
 
-    fn create_framebuffers(device: &Device, swapchain_extent: vk::Extent2D, swapchain_image_views: &Vec<vk::ImageView>, render_pass: vk::RenderPass) -> Vec<vk::Framebuffer> {
+    fn create_framebuffers(
+        device: &Device,
+        swapchain_extent: vk::Extent2D,
+        swapchain_image_views: &Vec<vk::ImageView>,
+        render_pass: vk::RenderPass,
+    ) -> Vec<vk::Framebuffer> {
         let mut framebuffers = Vec::new();
 
         for i in 0..swapchain_image_views.len() {
@@ -142,12 +182,48 @@ impl Swapchain {
                 .height(swapchain_extent.height)
                 .layers(1);
 
-            let framebuffer = unsafe { device.ash_device.create_framebuffer(&framebuffer_create_info, None) }
-                .expect("Failed to create framebuffer");
+            let framebuffer = unsafe {
+                device
+                    .ash_device
+                    .create_framebuffer(&framebuffer_create_info, None)
+            }
+            .expect("Failed to create framebuffer");
 
             framebuffers.push(framebuffer);
         }
         framebuffers
+    }
+
+    pub fn acquire_next_image(&mut self, signal_semaphore: vk::Semaphore) -> Option<u32> {
+        let acquire_result = unsafe {
+            self.swapchain_device.acquire_next_image(
+                self.swapchain_khr,
+                u64::MAX,
+                signal_semaphore,
+                vk::Fence::null(),
+            )
+        };
+
+        let image_index: u32;
+
+        match acquire_result {
+            Ok((index, is_suboptimal)) => {
+                if is_suboptimal {
+                    warn!("Swapchain is suboptimal");
+                    return None;
+                }
+                image_index = index;
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                warn!("Swapchain is out of date");
+                return None;
+            }
+            Err(e) => {
+                panic!("Failed to acquire next image: {:?}", e);
+            }
+        }
+
+        Some(image_index)
     }
 }
 
@@ -158,19 +234,19 @@ pub(crate) struct SupportDetails {
 }
 
 impl SupportDetails {
-    pub(crate) fn query_support(
-        physical_device: vk::PhysicalDevice,
-        surface: &Surface,
-    ) -> Self {
+    pub(crate) fn query_support(physical_device: vk::PhysicalDevice, surface: &Surface) -> Self {
         unsafe {
             Self {
-                capabilities: surface.surface_instance
+                capabilities: surface
+                    .surface_instance
                     .get_physical_device_surface_capabilities(physical_device, surface.surface_khr)
                     .expect("Failed to get adapter surface capabilities"),
-                formats: surface.surface_instance
+                formats: surface
+                    .surface_instance
                     .get_physical_device_surface_formats(physical_device, surface.surface_khr)
                     .expect("Failed to get adapter surface formats"),
-                present_modes: surface.surface_instance
+                present_modes: surface
+                    .surface_instance
                     .get_physical_device_surface_present_modes(physical_device, surface.surface_khr)
                     .expect("Failed to get adapter surface present modes"),
             }

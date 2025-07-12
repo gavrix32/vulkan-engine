@@ -1,10 +1,10 @@
-use std::collections::HashSet;
-use std::ffi::CStr;
-use ash::{khr, vk};
 use crate::state::QueueFamilyIndices;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain;
+use ash::{khr, vk};
+use std::collections::HashSet;
+use std::ffi::CStr;
 
 pub const DEVICE_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 
@@ -28,7 +28,7 @@ impl Adapter {
                 return Self {
                     physical_device,
                     queue_family_indices,
-                }
+                };
             }
         }
         panic!("Failed to find a suitable GPU");
@@ -40,17 +40,15 @@ fn is_physical_device_suitable(
     physical_device: vk::PhysicalDevice,
     surface: &Surface,
 ) -> (bool, QueueFamilyIndices) {
-    let indices =
-        QueueFamilyIndices::find_queue_families(instance, physical_device, surface);
+    let indices = QueueFamilyIndices::find_queue_families(instance, physical_device, surface);
 
     let extensions_supported = check_physical_device_extensions_support(instance, physical_device);
 
     let mut swapchain_adequate = false;
     if extensions_supported {
-        let swapchain_support =
-            swapchain::SupportDetails::query_support(physical_device, surface);
-        swapchain_adequate = !swapchain_support.formats.is_empty()
-            && !swapchain_support.present_modes.is_empty();
+        let swapchain_support = swapchain::SupportDetails::query_support(physical_device, surface);
+        swapchain_adequate =
+            !swapchain_support.formats.is_empty() && !swapchain_support.present_modes.is_empty();
     }
     (
         indices.is_complete() && extensions_supported && swapchain_adequate,
@@ -62,9 +60,12 @@ fn check_physical_device_extensions_support(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
 ) -> bool {
-    let available_extensions =
-        unsafe { instance.ash_instance.enumerate_device_extension_properties(physical_device) }
-            .expect("Failed to enumerate adapter extension properties");
+    let available_extensions = unsafe {
+        instance
+            .ash_instance
+            .enumerate_device_extension_properties(physical_device)
+    }
+    .expect("Failed to enumerate adapter extension properties");
 
     let mut required_extensions = HashSet::from(DEVICE_EXTENSIONS);
 

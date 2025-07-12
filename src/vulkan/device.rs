@@ -1,8 +1,8 @@
-use std::collections::HashSet;
-use std::ffi::c_char;
-use ash::vk;
 use crate::vulkan::adapter::{Adapter, DEVICE_EXTENSIONS};
 use crate::vulkan::instance::Instance;
+use ash::vk;
+use std::collections::HashSet;
+use std::ffi::c_char;
 
 pub struct Device {
     pub ash_device: ash::Device,
@@ -35,24 +35,32 @@ impl Device {
             .queue_create_infos(&queue_create_infos)
             .enabled_extension_names(&*adapter_extension_name_pointers);
 
-        let ash_device = unsafe { instance.ash_instance.create_device(adapter.physical_device, &device_create_info, None) }
-            .expect("Failed to create device");
+        let ash_device = unsafe {
+            instance
+                .ash_instance
+                .create_device(adapter.physical_device, &device_create_info, None)
+        }
+        .expect("Failed to create device");
 
-        let graphics_queue =
-            unsafe { ash_device.get_device_queue(adapter.queue_family_indices.graphics_family.unwrap(), 0) };
-        let present_queue =
-            unsafe { ash_device.get_device_queue(adapter.queue_family_indices.present_family.unwrap(), 0) };
+        let graphics_queue = unsafe {
+            ash_device.get_device_queue(adapter.queue_family_indices.graphics_family.unwrap(), 0)
+        };
+        let present_queue = unsafe {
+            ash_device.get_device_queue(adapter.queue_family_indices.present_family.unwrap(), 0)
+        };
 
         Self {
             ash_device,
             graphics_queue,
-            present_queue
+            present_queue,
         }
     }
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
-        unsafe { self.ash_device.destroy_device(None); }
+        unsafe {
+            self.ash_device.destroy_device(None);
+        }
     }
 }
