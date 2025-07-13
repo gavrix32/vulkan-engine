@@ -432,8 +432,6 @@ impl State {
 
         staging_buffer.copy(graphics_queue, &vertex_buffer, command_pool);
 
-        staging_buffer.destroy();
-
         vertex_buffer
     }
 
@@ -474,8 +472,6 @@ impl State {
         );
 
         staging_buffer.copy(graphics_queue, &index_buffer, command_pool);
-
-        staging_buffer.destroy();
 
         index_buffer
     }
@@ -936,10 +932,6 @@ impl Drop for State {
         unsafe {
             self.device.ash_device.device_wait_idle().unwrap();
 
-            for i in 0..MAX_FRAMES_IN_FLIGHT {
-                self.uniform_buffers[i].destroy();
-            }
-
             self.device
                 .ash_device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
@@ -947,9 +939,6 @@ impl Drop for State {
             self.device
                 .ash_device
                 .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-
-            self.index_buffer.destroy();
-            self.vertex_buffer.destroy();
 
             self.device.ash_device.destroy_pipeline(self.pipeline, None);
             self.device

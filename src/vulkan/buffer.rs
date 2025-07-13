@@ -163,8 +163,10 @@ impl Buffer {
         }
         panic!("Failed to find suitable memory type");
     }
+}
 
-    pub fn destroy(&self) {
+impl Drop for Buffer {
+    fn drop(&mut self) {
         unsafe {
             self.device.ash_device.destroy_buffer(self.vk_buffer, None);
             self.device.ash_device.free_memory(self.memory, None);
