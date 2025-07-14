@@ -147,7 +147,7 @@ impl State {
             Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
 
         let image = Image::new(
-            "src/textures/texture.jpg",
+            "textures/texture.jpg",
             &instance,
             &adapter,
             device.clone(),
