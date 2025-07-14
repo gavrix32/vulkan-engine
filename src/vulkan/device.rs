@@ -55,6 +55,12 @@ impl Device {
             present_queue,
         }
     }
+
+    pub fn wait_idle(&self) {
+        unsafe {
+            self.ash_device.device_wait_idle().unwrap();
+        }
+    }
 }
 
 impl Drop for Device {

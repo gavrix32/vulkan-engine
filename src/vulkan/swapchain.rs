@@ -78,7 +78,7 @@ impl Swapchain {
         width: u32,
         height: u32,
     ) {
-        unsafe { self.device.ash_device.device_wait_idle() }.unwrap();
+        self.device.wait_idle();
 
         self.destroy();
 

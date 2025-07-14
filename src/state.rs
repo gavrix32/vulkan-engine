@@ -1,6 +1,7 @@
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
 use crate::vulkan::device::Device;
+use crate::vulkan::image::Image;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
@@ -144,6 +145,14 @@ impl State {
 
         let command_pool =
             Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
+
+        let image = Image::new(
+            "src/textures/texture.jpg",
+            &instance,
+            &adapter,
+            device.clone(),
+            command_pool,
+        );
 
         let vertex_buffer = Self::create_vertex_buffer(
             &instance,
@@ -930,7 +939,7 @@ impl QueueFamilyIndices {
 impl Drop for State {
     fn drop(&mut self) {
         unsafe {
-            self.device.ash_device.device_wait_idle().unwrap();
+            self.device.wait_idle();
 
             self.device
                 .ash_device

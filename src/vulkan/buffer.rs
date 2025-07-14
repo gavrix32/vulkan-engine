@@ -1,4 +1,5 @@
 use crate::vulkan::adapter::Adapter;
+use crate::vulkan::command_buffer::CommandBuffer;
 use crate::vulkan::device::Device;
 use crate::vulkan::instance::Instance;
 use ash::vk;
@@ -67,29 +68,8 @@ impl Buffer {
         dst_buffer: &Self,
         command_pool: vk::CommandPool,
     ) {
-        let mut command_buffers: Vec<vk::CommandBuffer> = Vec::with_capacity(1);
-
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(command_buffers.capacity() as u32);
-
-        command_buffers = unsafe {
-            self.device
-                .ash_device
-                .allocate_command_buffers(&command_buffer_allocate_info)
-        }
-        .expect("Failed to allocate command buffers");
-
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-        unsafe {
-            self.device
-                .ash_device
-                .begin_command_buffer(command_buffers[0], &command_buffer_begin_info)
-        }
-        .expect("Failed to begin recording command buffer");
+        let command_buffers =
+            CommandBuffer::begin_single_time_commands(self.device.clone(), command_pool);
 
         let copy_region = vk::BufferCopy::default().size(self.size);
 
@@ -100,27 +80,14 @@ impl Buffer {
                 dst_buffer.vk_buffer,
                 &[copy_region],
             );
-            self.device
-                .ash_device
-                .end_command_buffer(command_buffers[0])
         }
-        .expect("Failed to end recording command buffer");
 
-        let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
-
-        unsafe {
-            self.device
-                .ash_device
-                .queue_submit(graphics_queue, &[submit_info], vk::Fence::null())
-                .unwrap();
-            self.device
-                .ash_device
-                .queue_wait_idle(graphics_queue)
-                .unwrap();
-            self.device
-                .ash_device
-                .free_command_buffers(command_pool, &command_buffers);
-        }
+        CommandBuffer::end_single_time_commands(
+            self.device.clone(),
+            command_pool,
+            command_buffers,
+            graphics_queue,
+        );
     }
 
     pub fn map_memory(&mut self) {
@@ -141,7 +108,7 @@ impl Buffer {
         unsafe { self.device.ash_device.unmap_memory(self.memory) };
     }
 
-    fn find_memory_type(
+    pub fn find_memory_type(
         instance: &Instance,
         adapter: &Adapter,
         type_filter: u32,
