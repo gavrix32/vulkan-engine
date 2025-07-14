@@ -13,6 +13,8 @@ pub struct Image {
     device: Arc<Device>,
     vk_image: vk::Image,
     memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    sampler: vk::Sampler,
 }
 
 impl Image {
@@ -114,10 +116,15 @@ impl Image {
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         );
 
+        let view = create_image_view(device.clone(), vk_image, format);
+        let sampler = create_sampler(device.clone());
+
         Self {
             device,
             vk_image,
             memory,
+            view,
+            sampler,
         }
     }
 }
@@ -235,9 +242,54 @@ fn copy_from_buffer(
     );
 }
 
+fn create_image_view(device: Arc<Device>, image: vk::Image, format: vk::Format) -> vk::ImageView {
+    let image_view_create_info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(format)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+
+    unsafe {
+        device
+            .ash_device
+            .create_image_view(&image_view_create_info, None)
+    }
+    .expect("Failed to create image view")
+}
+
+fn create_sampler(device: Arc<Device>) -> vk::Sampler {
+    let sampler_create_info = vk::SamplerCreateInfo::default()
+        .mag_filter(vk::Filter::LINEAR)
+        .min_filter(vk::Filter::LINEAR)
+        .address_mode_u(vk::SamplerAddressMode::REPEAT)
+        .address_mode_v(vk::SamplerAddressMode::REPEAT)
+        .address_mode_w(vk::SamplerAddressMode::REPEAT)
+        .anisotropy_enable(false)
+        .max_anisotropy(1.0)
+        .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+        .unnormalized_coordinates(false)
+        .compare_enable(false)
+        .compare_op(vk::CompareOp::ALWAYS)
+        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+        .mip_lod_bias(0.0)
+        .min_lod(0.0)
+        .max_lod(0.0);
+
+    unsafe { device.ash_device.create_sampler(&sampler_create_info, None) }
+        .expect("Failed to create sampler")
+}
+
 impl Drop for Image {
     fn drop(&mut self) {
         unsafe {
+            self.device.ash_device.destroy_sampler(self.sampler, None);
+            self.device.ash_device.destroy_image_view(self.view, None);
             self.device.ash_device.destroy_image(self.vk_image, None);
             self.device.ash_device.free_memory(self.memory, None);
         }
