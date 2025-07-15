@@ -1,24 +1,27 @@
 struct VSInput {
-    float2 in_position : POSITION;
-    float3 in_color : COLOR;
+    float2 in_position;
+    float3 in_color;
+    float2 in_tex_coord;
 };
 
 struct VSOutput {
     float4 position : SV_Position;
-    float3 frag_color : COLOR0;
+    float3 frag_color;
+    float2 frag_tex_coord;
 };
 
-struct UniformData {
+struct UniformBuffer {
     float4x4 model;
     float4x4 view;
     float4x4 proj;
-}
-ConstantBuffer<UniformData> uniform_buffer;
+};
+ConstantBuffer<UniformBuffer> uniform_buffer;
 
 [shader("vertex")]
 VSOutput main(VSInput input) {
     VSOutput output;
     output.position = mul(mul(mul(uniform_buffer.proj, uniform_buffer.view), uniform_buffer.model), float4(input.in_position, 0.0, 1.0));
     output.frag_color = input.in_color;
+    output.frag_tex_coord = input.in_tex_coord;
     return output;
 }

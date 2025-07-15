@@ -13,8 +13,8 @@ pub struct Image {
     device: Arc<Device>,
     vk_image: vk::Image,
     memory: vk::DeviceMemory,
-    view: vk::ImageView,
-    sampler: vk::Sampler,
+    pub view: vk::ImageView,
+    pub sampler: vk::Sampler,
 }
 
 impl Image {

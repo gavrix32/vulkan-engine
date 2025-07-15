@@ -19,6 +19,7 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 struct Vertex {
     position: [f32; 2],
     color: [f32; 3],
+    tex_coord: [f32; 2],
 }
 
 impl Vertex {
@@ -29,7 +30,7 @@ impl Vertex {
             .input_rate(vk::VertexInputRate::VERTEX)
     }
 
-    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
         [
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
@@ -41,6 +42,11 @@ impl Vertex {
                 .location(1)
                 .format(vk::Format::R32G32B32_SFLOAT)
                 .offset(offset_of!(Vertex, color) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(2)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(offset_of!(Vertex, tex_coord) as u32),
         ]
     }
 }
@@ -49,18 +55,22 @@ const VERTICES: [Vertex; 4] = [
     Vertex {
         position: [-0.5, -0.5],
         color: [1.0, 0.0, 0.0],
+        tex_coord: [1.0, 0.0],
     },
     Vertex {
         position: [0.5, -0.5],
         color: [0.0, 1.0, 0.0],
+        tex_coord: [0.0, 0.0],
     },
     Vertex {
         position: [0.5, 0.5],
         color: [0.0, 0.0, 1.0],
+        tex_coord: [0.0, 1.0],
     },
     Vertex {
         position: [-0.5, 0.5],
         color: [1.0, 1.0, 1.0],
+        tex_coord: [1.0, 1.0],
     },
 ];
 
@@ -79,6 +89,8 @@ pub struct State {
     uniform_buffers: Vec<Buffer>,
     index_buffer: Buffer,
     vertex_buffer: Buffer,
+
+    _image: Image,
 
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
@@ -147,7 +159,7 @@ impl State {
             Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
 
         let image = Image::new(
-            "textures/texture.jpg",
+            "textures/ladybug.jpg",
             &instance,
             &adapter,
             device.clone(),
@@ -178,6 +190,7 @@ impl State {
             descriptor_set_layout,
             descriptor_pool,
             &uniform_buffers,
+            &image,
         );
 
         let command_buffers = Self::create_command_buffers(&device.ash_device, command_pool);
@@ -201,6 +214,8 @@ impl State {
 
             command_pool,
             command_buffers,
+
+            _image: image,
 
             vertex_buffer,
             index_buffer,
@@ -268,10 +283,17 @@ impl State {
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX);
-        let uniform_buffer_layout_bindings = [uniform_buffer_layout_binding];
+
+        let sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+        let bindings = [uniform_buffer_layout_binding, sampler_layout_binding];
 
         let descriptor_set_layout_create_info =
-            vk::DescriptorSetLayoutCreateInfo::default().bindings(&uniform_buffer_layout_bindings);
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
         unsafe { device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None) }
             .expect("Failed to create descriptor set layout")
@@ -511,10 +533,18 @@ impl State {
     }
 
     fn create_descriptor_pool(device: &ash::Device) -> vk::DescriptorPool {
-        let descriptor_pool_size = vk::DescriptorPoolSize::default()
+        let uniform_buffer_descriptor_pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32);
-        let descriptor_pool_sizes = [descriptor_pool_size];
+
+        let sampler_descriptor_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32);
+
+        let descriptor_pool_sizes = [
+            uniform_buffer_descriptor_pool_size,
+            sampler_descriptor_pool_size,
+        ];
 
         let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&descriptor_pool_sizes)
@@ -529,6 +559,7 @@ impl State {
         descriptor_set_layout: vk::DescriptorSetLayout,
         descriptor_pool: vk::DescriptorPool,
         uniform_buffers: &Vec<Buffer>,
+        image: &Image,
     ) -> Vec<vk::DescriptorSet> {
         let mut descriptor_set_layouts = Vec::new();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
@@ -550,14 +581,29 @@ impl State {
                 .range(vk::WHOLE_SIZE);
             let descriptor_buffer_infos = [descriptor_buffer_info];
 
-            let descriptor_write = vk::WriteDescriptorSet::default()
+            let write_descriptor_buffer = vk::WriteDescriptorSet::default()
                 .dst_set(descriptor_sets[i])
                 .dst_binding(0)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .buffer_info(&descriptor_buffer_infos);
-            let descriptor_writes = [descriptor_write];
+
+            let descriptor_image_info = vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(image.view)
+                .sampler(image.sampler);
+            let descriptor_image_infos = [descriptor_image_info];
+
+            let write_descriptor_image = vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_sets[i])
+                .dst_binding(1)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .image_info(&descriptor_image_infos);
+
+            let descriptor_writes = [write_descriptor_buffer, write_descriptor_image];
 
             unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
         }
