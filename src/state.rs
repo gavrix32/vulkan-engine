@@ -9,6 +9,7 @@ use ash::util::Align;
 use ash::vk;
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+use std::io::Cursor;
 use std::mem::offset_of;
 use std::sync::Arc;
 use std::time::Instant;
@@ -159,7 +160,7 @@ impl State {
             Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
 
         let image = Image::new(
-            "textures/ladybug.jpg",
+            &mut Cursor::new(include_bytes!("../textures/ladybug.jpg")),
             &instance,
             &adapter,
             device.clone(),
@@ -310,13 +311,13 @@ impl State {
         render_pass: vk::RenderPass,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
     ) -> (vk::PipelineLayout, vk::Pipeline) {
-        let mut vertex_shader_file = std::fs::File::open("src/shaders/spirv/vertex.spv")
-            .expect("Failed to open vertex shader file");
-        let vertex_shader_code = ash::util::read_spv(&mut vertex_shader_file).unwrap();
+        let vertex_shader_bytes = include_bytes!("shaders/spirv/vertex.spv");
+        let vertex_shader_code =
+            ash::util::read_spv(&mut Cursor::new(vertex_shader_bytes)).unwrap();
 
-        let mut fragment_shader_file = std::fs::File::open("src/shaders/spirv/fragment.spv")
-            .expect("Failed to open fragment shader file");
-        let fragment_shader_code = ash::util::read_spv(&mut fragment_shader_file).unwrap();
+        let fragment_shader_bytes = include_bytes!("shaders/spirv/fragment.spv");
+        let fragment_shader_code =
+            ash::util::read_spv(&mut Cursor::new(fragment_shader_bytes)).unwrap();
 
         let vertex_shader_module =
             Self::create_shader_module(device, vertex_shader_code.as_slice());

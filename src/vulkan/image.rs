@@ -7,6 +7,7 @@ use ash::util::Align;
 use ash::vk;
 use image::ImageReader;
 use log::error;
+use std::io;
 use std::sync::Arc;
 
 pub struct Image {
@@ -18,15 +19,16 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn new(
-        path: &str,
+    pub fn new<R: io::Seek + io::BufRead>(
+        bytes: &mut R,
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
         command_pool: vk::CommandPool,
     ) -> Self {
-        let image = ImageReader::open(path)
-            .expect("Failed to open image")
+        let image = ImageReader::new(bytes)
+            .with_guessed_format()
+            .expect("Failed to guess format")
             .decode()
             .expect("Failed to decode image");
         let size = (image.width() * image.height() * 4) as vk::DeviceSize;
