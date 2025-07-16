@@ -1,5 +1,6 @@
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::device::Device;
+use crate::vulkan::image::Image;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 use ash::{khr, vk};
@@ -13,6 +14,7 @@ pub struct Swapchain {
     pub images: Vec<vk::Image>,
     pub extent: vk::Extent2D,
     pub image_views: Vec<vk::ImageView>,
+    pub depth_image: Image,
     pub framebuffers: Vec<vk::Framebuffer>,
 }
 
@@ -26,7 +28,15 @@ impl Swapchain {
         width: u32,
         height: u32,
     ) -> Self {
-        let (swapchain_device, swapchain_khr, images, extent, image_views, framebuffers) = init(
+        let (
+            swapchain_device,
+            swapchain_khr,
+            images,
+            extent,
+            image_views,
+            depth_image,
+            framebuffers,
+        ) = init(
             instance,
             adapter,
             device.clone(),
@@ -43,6 +53,7 @@ impl Swapchain {
             images,
             extent,
             image_views,
+            depth_image,
             framebuffers,
         }
     }
@@ -82,7 +93,15 @@ impl Swapchain {
 
         self.destroy();
 
-        let (swapchain_device, swapchain_khr, images, extent, image_views, framebuffers) = init(
+        let (
+            swapchain_device,
+            swapchain_khr,
+            images,
+            extent,
+            image_views,
+            depth_image,
+            framebuffers,
+        ) = init(
             instance,
             adapter,
             self.device.clone(),
@@ -97,6 +116,7 @@ impl Swapchain {
         self.images = images;
         self.extent = extent;
         self.image_views = image_views;
+        self.depth_image = depth_image;
         self.framebuffers = framebuffers;
     }
 
@@ -147,6 +167,7 @@ fn init(
     Vec<vk::Image>,
     vk::Extent2D,
     Vec<vk::ImageView>,
+    Image,
     Vec<vk::Framebuffer>,
 ) {
     let support_details = SupportDetails::query_support(adapter.physical_device, surface);
@@ -194,7 +215,23 @@ fn init(
     let images = unsafe { swapchain_device.get_swapchain_images(swapchain_khr) }
         .expect("Failed to get swapchain images");
     let image_views = create_image_views(&images, surface_format.format, device.clone());
-    let framebuffers = create_framebuffers(device.clone(), extent, &image_views, render_pass);
+    let depth_image = Image::new(
+        &instance,
+        &adapter,
+        device.clone(),
+        width,
+        height,
+        vk::Format::D32_SFLOAT_S8_UINT,
+        vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        vk::ImageAspectFlags::DEPTH,
+    );
+    let framebuffers = create_framebuffers(
+        device.clone(),
+        extent,
+        &image_views,
+        &depth_image,
+        render_pass,
+    );
 
     (
         swapchain_device,
@@ -202,6 +239,7 @@ fn init(
         images,
         extent,
         image_views,
+        depth_image,
         framebuffers,
     )
 }
@@ -249,12 +287,13 @@ fn create_framebuffers(
     device: Arc<Device>,
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: &Vec<vk::ImageView>,
+    depth_image: &Image,
     render_pass: vk::RenderPass,
 ) -> Vec<vk::Framebuffer> {
     let mut framebuffers = Vec::new();
 
     for i in 0..swapchain_image_views.len() {
-        let attachments = [swapchain_image_views[i]];
+        let attachments = [swapchain_image_views[i], depth_image.view];
         let framebuffer_create_info = vk::FramebufferCreateInfo::default()
             .render_pass(render_pass)
             .attachments(&attachments)

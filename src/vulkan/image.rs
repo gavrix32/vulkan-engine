@@ -15,11 +15,75 @@ pub struct Image {
     vk_image: vk::Image,
     memory: vk::DeviceMemory,
     pub view: vk::ImageView,
-    pub sampler: vk::Sampler,
+    pub sampler: Option<vk::Sampler>,
 }
 
 impl Image {
-    pub fn new<R: io::Seek + io::BufRead>(
+    pub fn new(
+        instance: &Instance,
+        adapter: &Adapter,
+        device: Arc<Device>,
+        width: u32,
+        height: u32,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        aspect: vk::ImageAspectFlags,
+    ) -> Self {
+        let layout = vk::ImageLayout::UNDEFINED;
+
+        let image_create_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .format(format)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .initial_layout(layout)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .samples(vk::SampleCountFlags::TYPE_1);
+
+        let vk_image = unsafe { device.ash_device.create_image(&image_create_info, None) }
+            .expect("Failed to create image");
+
+        let memory_requirements =
+            unsafe { device.ash_device.get_image_memory_requirements(vk_image) };
+
+        let memory_allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(memory_requirements.size)
+            .memory_type_index(Buffer::find_memory_type(
+                instance,
+                adapter,
+                memory_requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            ));
+
+        let memory = unsafe {
+            device
+                .ash_device
+                .allocate_memory(&memory_allocate_info, None)
+        }
+        .expect("Failed to allocate image memory");
+
+        unsafe { device.ash_device.bind_image_memory(vk_image, memory, 0) }
+            .expect("Failed to bind image memory");
+
+        let view = create_image_view(device.clone(), vk_image, format, aspect);
+
+        Self {
+            device,
+            vk_image,
+            memory,
+            view,
+            sampler: None,
+        }
+    }
+
+    pub fn from_bytes<R: io::Seek + io::BufRead>(
         bytes: &mut R,
         instance: &Instance,
         adapter: &Adapter,
@@ -118,7 +182,12 @@ impl Image {
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         );
 
-        let view = create_image_view(device.clone(), vk_image, format);
+        let view = create_image_view(
+            device.clone(),
+            vk_image,
+            format,
+            vk::ImageAspectFlags::COLOR,
+        );
         let sampler = create_sampler(device.clone());
 
         Self {
@@ -126,7 +195,7 @@ impl Image {
             vk_image,
             memory,
             view,
-            sampler,
+            sampler: Some(sampler),
         }
     }
 }
@@ -244,13 +313,18 @@ fn copy_from_buffer(
     );
 }
 
-fn create_image_view(device: Arc<Device>, image: vk::Image, format: vk::Format) -> vk::ImageView {
+fn create_image_view(
+    device: Arc<Device>,
+    image: vk::Image,
+    format: vk::Format,
+    aspect: vk::ImageAspectFlags,
+) -> vk::ImageView {
     let image_view_create_info = vk::ImageViewCreateInfo::default()
         .image(image)
         .view_type(vk::ImageViewType::TYPE_2D)
         .format(format)
         .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
+            aspect_mask: aspect,
             base_mip_level: 0,
             level_count: 1,
             base_array_layer: 0,
@@ -290,7 +364,9 @@ fn create_sampler(device: Arc<Device>) -> vk::Sampler {
 impl Drop for Image {
     fn drop(&mut self) {
         unsafe {
-            self.device.ash_device.destroy_sampler(self.sampler, None);
+            if let Some(sampler) = self.sampler {
+                self.device.ash_device.destroy_sampler(sampler, None);
+            }
             self.device.ash_device.destroy_image_view(self.view, None);
             self.device.ash_device.destroy_image(self.vk_image, None);
             self.device.ash_device.free_memory(self.memory, None);

@@ -22,7 +22,7 @@ impl Instance {
             .application_version(vk::make_api_version(0, 1, 0, 0))
             .engine_name(c"No Engine")
             .engine_version(0)
-            .api_version(vk::make_api_version(0, 1, 3, 0));
+            .api_version(vk::API_VERSION_1_3);
 
         let required_extensions = get_required_extensions(display_handle);
 
