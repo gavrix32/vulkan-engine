@@ -7,6 +7,8 @@ use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
 use ash::util::Align;
 use ash::vk;
+use gltf::accessor::DataType;
+use gltf::{Accessor, Document, buffer};
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::io::Cursor;
@@ -17,7 +19,7 @@ use std::time::Instant;
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 #[derive(Copy, Clone)]
-struct Vertex {
+pub(crate) struct Vertex {
     position: [f32; 3],
     color: [f32; 3],
     tex_coord: [f32; 2],
@@ -52,52 +54,72 @@ impl Vertex {
     }
 }
 
-const VERTICES: [Vertex; 8] = [
-    // First quad
-    Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [1.0, 0.0, 0.0],
-        tex_coord: [1.0, 0.0],
-    },
-    Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0],
-        tex_coord: [0.0, 0.0],
-    },
-    Vertex {
-        position: [0.5, 0.5, 0.0],
-        color: [0.0, 0.0, 1.0],
-        tex_coord: [0.0, 1.0],
-    },
-    Vertex {
-        position: [-0.5, 0.5, 0.0],
-        color: [1.0, 1.0, 1.0],
-        tex_coord: [1.0, 1.0],
-    },
-    // Second quad
-    Vertex {
-        position: [-0.5, -0.5, -0.5],
-        color: [1.0, 0.0, 0.0],
-        tex_coord: [1.0, 0.0],
-    },
-    Vertex {
-        position: [0.5, -0.5, -0.5],
-        color: [0.0, 1.0, 0.0],
-        tex_coord: [0.0, 0.0],
-    },
-    Vertex {
-        position: [0.5, 0.5, -0.5],
-        color: [0.0, 0.0, 1.0],
-        tex_coord: [0.0, 1.0],
-    },
-    Vertex {
-        position: [-0.5, 0.5, -0.5],
-        color: [1.0, 1.0, 1.0],
-        tex_coord: [1.0, 1.0],
-    },
-];
+fn add_indices(accessor: &Accessor, buffer_data: &[buffer::Data], dst: &mut Vec<u32>) {
+    let view = accessor.view().unwrap();
+    let buffer = &buffer_data[view.buffer().index()];
+    let offset = view.offset() + accessor.offset();
+    let length = accessor.count();
 
-const INDICES: [u16; 12] = [0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4];
+    let bytes = &buffer[offset..offset + length * 2];
+    let slice: &[u16] = bytemuck::cast_slice(bytes);
+    dst.extend(slice.iter().map(|&i| i as u32));
+}
+
+fn get_mesh_data(document: Document, buffer_data: Vec<buffer::Data>) -> (Vec<Vertex>, Vec<u32>) {
+    let mut vertices: Vec<Vertex> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+
+    for mesh in document.meshes() {
+        for primitive in mesh.primitives() {
+            // indices
+            if let Some(accessor) = primitive.indices() {
+                match accessor.data_type() {
+                    DataType::U8 | DataType::U16 | DataType::U32 => {
+                        add_indices(&accessor, &buffer_data, &mut indices)
+                    }
+                    _ => panic!("Unsupported index type"),
+                }
+            }
+
+            // texture coords
+            let texture_coords: Option<&[[f32; 2]]> = primitive
+                .get(&gltf::Semantic::TexCoords(0))
+                .map(|accessor| {
+                    let view = accessor.view().unwrap();
+                    let buffer = &buffer_data[view.buffer().index()];
+                    let offset = view.offset() + accessor.offset();
+                    let bytes = &buffer[offset..offset + accessor.count() * 8]; // 2 * f32 == 8 bytes
+                    bytemuck::cast_slice(bytes)
+                });
+
+            // vertices
+            if let Some(accessor) = primitive.get(&gltf::Semantic::Positions) {
+                let view = accessor.view().unwrap();
+                let buffer = &buffer_data[view.buffer().index()];
+                let offset = view.offset() + accessor.offset();
+                let length = accessor.count();
+                let bytes = &buffer[offset..offset + length * 12];
+                let positions: &[[f32; 3]] = bytemuck::cast_slice(bytes);
+
+                for i in 0..length {
+                    vertices.push(Vertex {
+                        position: positions[i],
+                        color: [1.0, 1.0, 1.0],
+                        tex_coord: texture_coords.map_or([0.0, 0.0], |tc| tc[i]),
+                    });
+                }
+            }
+        }
+    }
+    (vertices, indices)
+}
+
+fn rgb_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
+    rgb_data
+        .chunks_exact(3)
+        .flat_map(|rgb_pixel| [rgb_pixel[0], rgb_pixel[1], rgb_pixel[2], 255])
+        .collect()
+}
 
 #[repr(C)]
 #[allow(dead_code)]
@@ -142,6 +164,8 @@ pub struct State {
     pub framebuffer_resized: bool,
     pub width: u32,
     pub height: u32,
+
+    index_count: u32,
 }
 
 impl State {
@@ -182,8 +206,24 @@ impl State {
         let command_pool =
             Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
 
+        let (document, buffers, images) =
+            gltf::import_slice(include_bytes!("../models/viking_room.glb"))
+                .expect("Failed to load model");
+
+        let (vertices, indices) = get_mesh_data(document, buffers);
+
+        let image_data = &images[0];
+
+        let image_bytes = match image_data.format {
+            gltf::image::Format::R8G8B8A8 => &image_data.pixels,
+            gltf::image::Format::R8G8B8 => &rgb_to_rgba(&image_data.pixels),
+            _ => panic!("Unsupported texture format: {:?}", image_data.format),
+        };
+
         let image = Image::from_bytes(
-            &mut Cursor::new(include_bytes!("../textures/ladybug.jpg")),
+            image_bytes,
+            image_data.width,
+            image_data.height,
             &instance,
             &adapter,
             device.clone(),
@@ -196,6 +236,7 @@ impl State {
             device.clone(),
             device.graphics_queue,
             command_pool,
+            &vertices,
         );
 
         let index_buffer = Self::create_index_buffer(
@@ -204,6 +245,7 @@ impl State {
             device.clone(),
             device.graphics_queue,
             command_pool,
+            &indices,
         );
 
         let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, device.clone());
@@ -255,6 +297,8 @@ impl State {
             framebuffer_resized: false,
             width,
             height,
+
+            index_count: indices.len() as u32,
         }
     }
 
@@ -486,8 +530,9 @@ impl State {
         device: Arc<Device>,
         graphics_queue: vk::Queue,
         command_pool: vk::CommandPool,
+        vertices: &Vec<Vertex>,
     ) -> Buffer {
-        let size = (size_of::<Vertex>() * VERTICES.len()) as vk::DeviceSize;
+        let size = (size_of::<Vertex>() * vertices.len()) as vk::DeviceSize;
 
         let mut staging_buffer = Buffer::new(
             instance,
@@ -503,7 +548,7 @@ impl State {
 
         let mut vertex_align =
             unsafe { Align::new(data_ptr, align_of::<Vertex>() as vk::DeviceSize, size) };
-        vertex_align.copy_from_slice(&VERTICES);
+        vertex_align.copy_from_slice(&vertices);
 
         staging_buffer.unmap_memory();
 
@@ -527,8 +572,9 @@ impl State {
         device: Arc<Device>,
         graphics_queue: vk::Queue,
         command_pool: vk::CommandPool,
+        indices: &Vec<u32>,
     ) -> Buffer {
-        let buffer_size = (size_of::<u16>() * INDICES.len()) as vk::DeviceSize;
+        let buffer_size = (size_of::<u32>() * indices.len()) as vk::DeviceSize;
 
         let mut staging_buffer = Buffer::new(
             instance,
@@ -543,8 +589,8 @@ impl State {
         let data_ptr = staging_buffer.p_data.unwrap();
 
         let mut vertex_align =
-            unsafe { Align::new(data_ptr, align_of::<u16>() as vk::DeviceSize, buffer_size) };
-        vertex_align.copy_from_slice(&INDICES);
+            unsafe { Align::new(data_ptr, align_of::<u32>() as vk::DeviceSize, buffer_size) };
+        vertex_align.copy_from_slice(&indices);
 
         staging_buffer.unmap_memory();
 
@@ -797,7 +843,7 @@ impl State {
                 command_buffer,
                 self.index_buffer.vk_buffer,
                 vk::DeviceSize::default(),
-                vk::IndexType::UINT16,
+                vk::IndexType::UINT32,
             );
 
             self.device.ash_device.cmd_bind_descriptor_sets(
@@ -809,14 +855,9 @@ impl State {
                 &[],
             );
 
-            self.device.ash_device.cmd_draw_indexed(
-                command_buffer,
-                INDICES.len() as u32,
-                1,
-                0,
-                0,
-                0,
-            );
+            self.device
+                .ash_device
+                .cmd_draw_indexed(command_buffer, self.index_count, 1, 0, 0, 0);
 
             self.device.ash_device.cmd_end_render_pass(command_buffer);
         };

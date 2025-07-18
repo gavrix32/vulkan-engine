@@ -30,9 +30,10 @@ impl Image {
         aspect: vk::ImageAspectFlags,
     ) -> Self {
         let layout = vk::ImageLayout::UNDEFINED;
+        let image_type = vk::ImageType::TYPE_2D;
 
         let image_create_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
+            .image_type(image_type)
             .extent(vk::Extent3D {
                 width,
                 height,
@@ -83,19 +84,43 @@ impl Image {
         }
     }
 
-    pub fn from_bytes<R: io::Seek + io::BufRead>(
-        bytes: &mut R,
+    #[allow(unused)]
+    pub fn read<R: io::Seek + io::BufRead>(
+        buffer: &mut R,
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
         command_pool: vk::CommandPool,
     ) -> Self {
-        let image = ImageReader::new(bytes)
+        let image = ImageReader::new(buffer)
             .with_guessed_format()
             .expect("Failed to guess format")
             .decode()
-            .expect("Failed to decode image");
-        let size = (image.width() * image.height() * 4) as vk::DeviceSize;
+            .expect("Failed to decode image")
+            .to_rgba8();
+        let bytes = image.as_raw();
+
+        Self::from_bytes(
+            bytes,
+            image.width(),
+            image.height(),
+            instance,
+            adapter,
+            device,
+            command_pool,
+        )
+    }
+
+    pub fn from_bytes(
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        instance: &Instance,
+        adapter: &Adapter,
+        device: Arc<Device>,
+        command_pool: vk::CommandPool,
+    ) -> Self {
+        let size = (width * height * 4) as vk::DeviceSize;
 
         let mut staging_buffer = Buffer::new(
             instance,
@@ -111,7 +136,7 @@ impl Image {
 
         let mut image_align =
             unsafe { Align::new(data_ptr, align_of::<u8>() as vk::DeviceSize, size) };
-        image_align.copy_from_slice(image.to_rgba8().as_raw());
+        image_align.copy_from_slice(bytes);
 
         staging_buffer.unmap_memory();
 
@@ -121,8 +146,8 @@ impl Image {
         let image_create_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .extent(vk::Extent3D {
-                width: image.width(),
-                height: image.height(),
+                width,
+                height,
                 depth: 1,
             })
             .mip_levels(1)
@@ -170,8 +195,8 @@ impl Image {
             device.clone(),
             &staging_buffer,
             vk_image,
-            image.width(),
-            image.height(),
+            width,
+            height,
             command_pool,
         );
         transition_layout(
