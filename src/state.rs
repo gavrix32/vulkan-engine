@@ -3,15 +3,15 @@ use crate::vulkan::buffer::Buffer;
 use crate::vulkan::device::Device;
 use crate::vulkan::image::Image;
 use crate::vulkan::instance::Instance;
+use crate::vulkan::pipeline::Pipeline;
+use crate::vulkan::render_pass::RenderPass;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
 use ash::util::Align;
 use ash::vk;
-use gltf::accessor::DataType;
-use gltf::{Accessor, Document, buffer};
+use gltf::{Document, buffer};
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-use std::io::Cursor;
 use std::mem::offset_of;
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,14 +26,14 @@ pub(crate) struct Vertex {
 }
 
 impl Vertex {
-    fn get_binding_description() -> vk::VertexInputBindingDescription {
+    pub(crate) fn get_binding_description() -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription::default()
             .binding(0)
             .stride(size_of::<Vertex>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)
     }
 
-    fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
+    pub(crate) fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
         [
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
@@ -54,16 +54,32 @@ impl Vertex {
     }
 }
 
-fn add_indices(accessor: &Accessor, buffer_data: &[buffer::Data], dst: &mut Vec<u32>) {
-    let view = accessor.view().unwrap();
-    let buffer = &buffer_data[view.buffer().index()];
-    let offset = view.offset() + accessor.offset();
-    let length = accessor.count();
-
-    let bytes = &buffer[offset..offset + length * 2];
-    let slice: &[u16] = bytemuck::cast_slice(bytes);
-    dst.extend(slice.iter().map(|&i| i as u32));
-}
+// fn add_indices(accessor: &Accessor, buffer_data: &[buffer::Data], dst: &mut Vec<u32>) {
+//     let view = accessor.view().unwrap();
+//     let buffer = &buffer_data[view.buffer().index()];
+//     let offset = view.offset() + accessor.offset();
+//     let length = accessor.count();
+//     let stride = accessor.size();
+//
+//     let bytes = &buffer[offset..offset + length * stride];
+//     match accessor.data_type() {
+//         DataType::U8 => {
+//             let slice: &[u8] = bytemuck::cast_slice(bytes);
+//             dst.extend(slice.iter().map(|&i| i as u32));
+//         }
+//         DataType::U16 => {
+//             let slice: &[u16] = bytemuck::cast_slice(bytes);
+//             dst.extend(slice.iter().map(|&i| i as u32));
+//         }
+//         DataType::U32 => {
+//             let slice: &[u32] = bytemuck::cast_slice(bytes);
+//             dst.extend(slice.iter().cloned());
+//         }
+//         _ => panic!("Unsupported index type"),
+//     }
+// let slice: &[u16] = bytemuck::cast_slice(bytes);
+// dst.extend(slice.iter().map(|&i| i as u32));
+// }
 
 fn get_mesh_data(document: Document, buffer_data: Vec<buffer::Data>) -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices: Vec<Vertex> = Vec::new();
@@ -71,44 +87,85 @@ fn get_mesh_data(document: Document, buffer_data: Vec<buffer::Data>) -> (Vec<Ver
 
     for mesh in document.meshes() {
         for primitive in mesh.primitives() {
-            // indices
-            if let Some(accessor) = primitive.indices() {
-                match accessor.data_type() {
-                    DataType::U8 | DataType::U16 | DataType::U32 => {
-                        add_indices(&accessor, &buffer_data, &mut indices)
-                    }
-                    _ => panic!("Unsupported index type"),
-                }
-            }
+            let reader = primitive.reader(|buffer| Some(&buffer_data[buffer.index()]));
 
-            // texture coords
-            let texture_coords: Option<&[[f32; 2]]> = primitive
-                .get(&gltf::Semantic::TexCoords(0))
-                .map(|accessor| {
-                    let view = accessor.view().unwrap();
-                    let buffer = &buffer_data[view.buffer().index()];
-                    let offset = view.offset() + accessor.offset();
-                    let bytes = &buffer[offset..offset + accessor.count() * 8]; // 2 * f32 == 8 bytes
-                    bytemuck::cast_slice(bytes)
-                });
+            let positions: Vec<[f32; 3]> = reader.read_positions().unwrap().collect();
+            let tex_coords: Vec<[f32; 2]> = reader
+                .read_tex_coords(0)
+                .map(|tc| tc.into_f32().collect())
+                .unwrap_or_default();
 
-            // vertices
-            if let Some(accessor) = primitive.get(&gltf::Semantic::Positions) {
-                let view = accessor.view().unwrap();
-                let buffer = &buffer_data[view.buffer().index()];
-                let offset = view.offset() + accessor.offset();
-                let length = accessor.count();
-                let bytes = &buffer[offset..offset + length * 12];
-                let positions: &[[f32; 3]] = bytemuck::cast_slice(bytes);
-
-                for i in 0..length {
-                    vertices.push(Vertex {
+            if let Some(read_indices) = reader.read_indices() {
+                for index in read_indices.into_u32() {
+                    let i = index as usize;
+                    let vertex = Vertex {
                         position: positions[i],
                         color: [1.0, 1.0, 1.0],
-                        tex_coord: texture_coords.map_or([0.0, 0.0], |tc| tc[i]),
-                    });
+                        tex_coord: tex_coords.get(i).copied().unwrap_or([0.0, 0.0]),
+                    };
+                    indices.push(vertices.len() as u32);
+                    vertices.push(vertex);
                 }
             }
+
+            // // indices
+            // if let Some(accessor) = primitive.indices() {
+            //     match accessor.data_type() {
+            //         DataType::U8 | DataType::U16 | DataType::U32 => {
+            //             add_indices(&accessor, &buffer_data, &mut indices)
+            //         }
+            //         _ => panic!("Unsupported index type"),
+            //     }
+            // }
+            //
+            // // texture coords
+            // let texture_coords: Option<&[[f32; 2]]> = primitive
+            //     .get(&gltf::Semantic::TexCoords(0))
+            //     .map(|accessor| {
+            //         let view = accessor.view().unwrap();
+            //         let buffer = &buffer_data[view.buffer().index()];
+            //         let offset = view.offset() + accessor.offset();
+            //         let bytes = &buffer[offset..offset + accessor.count() * 8]; // 2 * f32 == 8 bytes
+            //         bytemuck::cast_slice(bytes)
+            //     });
+            //
+            // // vertices
+            // if let Some(accessor) = primitive.get(&gltf::Semantic::Positions) {
+            //     let view = accessor.view().unwrap();
+            //     let buffer = &buffer_data[view.buffer().index()];
+            //     let offset = view.offset() + accessor.offset();
+            //     let length = accessor.count();
+            //     let stride = view.stride().unwrap_or(size_of::<&[f32; 3]>());
+            //
+            //     // let bytes = &buffer[offset..offset + length * 12];
+            //     // let positions: &[[f32; 3]] = bytemuck::cast_slice(bytes);
+            //
+            //     for i in 0..length {
+            //         let start = offset + i * stride;
+            //         let end = start + size_of::<[f32; 3]>();
+            //         let bytes = &buffer[start..end];
+            //         let position: [f32; 3] = *bytemuck::from_bytes(bytes);
+            //
+            //         vertices.push(Vertex {
+            //             position,
+            //             color: [1.0, 1.0, 1.0],
+            //             tex_coord: texture_coords.map_or([0.0, 0.0], |tc| tc[i]),
+            //         });
+            //     }
+
+            // vertices = Vec::with_capacity(length);
+            // for i in 0..length {
+            //     let start = offset + i * stride;
+            //     let end = start + size_of::<&[f32; 3]>();
+            //     let bytes = &buffer[start..end];
+            //
+            //     vertices.push(Vertex {
+            //         position: *bytemuck::from_bytes(bytes),
+            //         color: [1.0, 1.0, 1.0],
+            //         tex_coord: texture_coords.map_or([0.0, 0.0], |tc| tc[i]),
+            //     });
+            // }
+            // }
         }
     }
     (vertices, indices)
@@ -140,14 +197,13 @@ pub struct State {
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
 
-    pipeline: vk::Pipeline,
-    pipeline_layout: vk::PipelineLayout,
+    pipeline: Pipeline,
     descriptor_sets: Vec<vk::DescriptorSet>,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
 
     swapchain: Swapchain,
-    render_pass: vk::RenderPass,
+    render_pass: RenderPass,
     device: Arc<Device>,
     adapter: Adapter,
     surface: Surface,
@@ -179,17 +235,15 @@ impl State {
         let surface = Surface::new(&instance, display_handle, window_handle);
         let adapter = Adapter::new(&instance, &surface);
         let device = Arc::new(Device::new(&instance, &adapter));
-        let render_pass = Self::create_render_pass(
-            &device.ash_device,
-            Swapchain::get_format(&adapter, &surface),
-        );
+        let render_pass =
+            RenderPass::new(device.clone(), Swapchain::get_format(&adapter, &surface));
 
         let swapchain = Swapchain::new(
             &instance,
             &adapter,
             device.clone(),
             &surface,
-            render_pass,
+            render_pass.vk_render_pass,
             width,
             height,
         );
@@ -197,11 +251,7 @@ impl State {
         let descriptor_set_layout = Self::create_descriptor_set_layout(&device.ash_device);
         let descriptor_set_layouts = [descriptor_set_layout];
 
-        let (pipeline_layout, pipeline) = Self::create_graphics_pipeline(
-            &device.ash_device,
-            render_pass,
-            &descriptor_set_layouts,
-        );
+        let pipeline = Pipeline::new(device.clone(), &render_pass, &descriptor_set_layouts);
 
         let command_pool =
             Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
@@ -275,7 +325,6 @@ impl State {
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets,
-            pipeline_layout,
             pipeline,
 
             command_pool,
@@ -302,74 +351,6 @@ impl State {
         }
     }
 
-    fn create_render_pass(
-        device: &ash::Device,
-        swapchain_image_format: vk::Format,
-    ) -> vk::RenderPass {
-        let color_attachment_description = vk::AttachmentDescription::default()
-            .format(swapchain_image_format)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
-
-        let color_attachment_reference = vk::AttachmentReference::default()
-            .attachment(0)
-            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        let color_attachment_references = [color_attachment_reference];
-
-        let depth_attachment_description = vk::AttachmentDescription::default()
-            .format(vk::Format::D32_SFLOAT_S8_UINT)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-
-        let depth_attachment_reference = vk::AttachmentReference::default()
-            .attachment(1)
-            .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-
-        let attachment_descriptions = [color_attachment_description, depth_attachment_description];
-
-        let subpass_description = vk::SubpassDescription::default()
-            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(&color_attachment_references)
-            .depth_stencil_attachment(&depth_attachment_reference);
-        let subpass_descriptions = [subpass_description];
-
-        let subpass_dependency = vk::SubpassDependency::default()
-            .src_subpass(vk::SUBPASS_EXTERNAL)
-            .dst_subpass(0)
-            .src_stage_mask(
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                    | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-            )
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_stage_mask(
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                    | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-            )
-            .dst_access_mask(
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            );
-        let subpass_dependencies = [subpass_dependency];
-
-        let render_pass_create_info = vk::RenderPassCreateInfo::default()
-            .attachments(&attachment_descriptions)
-            .subpasses(&subpass_descriptions)
-            .dependencies(&subpass_dependencies);
-
-        unsafe { device.create_render_pass(&render_pass_create_info, None) }
-            .expect("Failed to create render pass")
-    }
-
     fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
         let uniform_buffer_layout_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
@@ -390,126 +371,6 @@ impl State {
 
         unsafe { device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None) }
             .expect("Failed to create descriptor set layout")
-    }
-
-    fn create_shader_module(device: &ash::Device, words: &[u32]) -> vk::ShaderModule {
-        let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(words);
-        unsafe { device.create_shader_module(&shader_module_create_info, None) }
-            .expect("Failed to create shader module")
-    }
-
-    fn create_graphics_pipeline(
-        device: &ash::Device,
-        render_pass: vk::RenderPass,
-        descriptor_set_layouts: &[vk::DescriptorSetLayout],
-    ) -> (vk::PipelineLayout, vk::Pipeline) {
-        let vertex_shader_bytes = include_bytes!("shaders/spirv/vertex.spv");
-        let vertex_shader_code =
-            ash::util::read_spv(&mut Cursor::new(vertex_shader_bytes)).unwrap();
-
-        let fragment_shader_bytes = include_bytes!("shaders/spirv/fragment.spv");
-        let fragment_shader_code =
-            ash::util::read_spv(&mut Cursor::new(fragment_shader_bytes)).unwrap();
-
-        let vertex_shader_module =
-            Self::create_shader_module(device, vertex_shader_code.as_slice());
-        let fragment_shader_module =
-            Self::create_shader_module(device, fragment_shader_code.as_slice());
-
-        let vertex_shader_stage_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::VERTEX)
-            .module(vertex_shader_module)
-            .name(c"main");
-        let fragment_shader_stage_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::FRAGMENT)
-            .module(fragment_shader_module)
-            .name(c"main");
-
-        let shader_stage_create_infos = [vertex_shader_stage_info, fragment_shader_stage_info];
-
-        let binding_descriptions = [Vertex::get_binding_description()];
-        let attribute_descriptions = Vertex::get_attribute_descriptions();
-
-        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&binding_descriptions)
-            .vertex_attribute_descriptions(&attribute_descriptions);
-
-        let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
-
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-
-        let dynamic_state =
-            vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
-
-        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
-            .viewport_count(1)
-            .scissor_count(1);
-
-        let rasterizer_state = vk::PipelineRasterizationStateCreateInfo::default()
-            .depth_clamp_enable(false)
-            .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
-            .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::BACK)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .depth_bias_enable(false);
-
-        let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
-            .sample_shading_enable(false)
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-
-        let color_blend_attachment_state = vk::PipelineColorBlendAttachmentState::default()
-            .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false);
-        let color_blend_attachment_states = [color_blend_attachment_state];
-
-        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
-            .logic_op_enable(false)
-            .attachments(&color_blend_attachment_states);
-
-        let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::default()
-            .depth_test_enable(true)
-            .depth_write_enable(true)
-            .depth_compare_op(vk::CompareOp::LESS);
-
-        let pipeline_layout_create_info =
-            vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts);
-
-        let pipeline_layout =
-            unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }
-                .expect("Failed to create pipeline layout");
-
-        let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stage_create_infos)
-            .vertex_input_state(&vertex_input_state)
-            .input_assembly_state(&input_assembly_state)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer_state)
-            .multisample_state(&multisample_state)
-            .color_blend_state(&color_blend_state)
-            .depth_stencil_state(&depth_stencil_state)
-            .dynamic_state(&dynamic_state)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0);
-
-        let graphics_pipelines = unsafe {
-            device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                &[pipeline_create_info],
-                None,
-            )
-        }
-        .expect("Failed to create graphics pipelines");
-
-        unsafe {
-            device.destroy_shader_module(vertex_shader_module, None);
-            device.destroy_shader_module(fragment_shader_module, None);
-        }
-
-        (pipeline_layout, graphics_pipelines[0])
     }
 
     fn create_command_pool(
@@ -779,7 +640,7 @@ impl State {
         let clear_values = [clear_color, clear_depth];
 
         let render_pass_begin_info = vk::RenderPassBeginInfo::default()
-            .render_pass(self.render_pass)
+            .render_pass(self.render_pass.vk_render_pass)
             .framebuffer(self.swapchain.framebuffers[image_index as usize])
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
@@ -823,7 +684,7 @@ impl State {
             self.device.ash_device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline,
+                self.pipeline.vk_pipeline,
             );
 
             self.device
@@ -849,7 +710,7 @@ impl State {
             self.device.ash_device.cmd_bind_descriptor_sets(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
+                self.pipeline.layout,
                 0,
                 &[self.descriptor_sets[self.frame_in_flight_index]],
                 &[],
@@ -1005,7 +866,7 @@ impl State {
             &self.instance,
             &self.adapter,
             &self.surface,
-            self.render_pass,
+            self.render_pass.vk_render_pass,
             self.width,
             self.height,
         );
@@ -1079,15 +940,6 @@ impl Drop for State {
             self.device
                 .ash_device
                 .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-
-            self.device.ash_device.destroy_pipeline(self.pipeline, None);
-            self.device
-                .ash_device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
-
-            self.device
-                .ash_device
-                .destroy_render_pass(self.render_pass, None);
 
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 self.device
