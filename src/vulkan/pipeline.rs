@@ -1,4 +1,4 @@
-use crate::state::Vertex;
+use crate::renderer::Vertex;
 use crate::vulkan::device::Device;
 use crate::vulkan::render_pass::RenderPass;
 use ash::vk;

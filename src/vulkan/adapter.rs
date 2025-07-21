@@ -1,4 +1,4 @@
-use crate::state::QueueFamilyIndices;
+use crate::renderer::QueueFamilyIndices;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain;
