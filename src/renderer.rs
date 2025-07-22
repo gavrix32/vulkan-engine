@@ -146,6 +146,7 @@ pub struct Renderer {
     pub height: u32,
 
     index_count: u32,
+    pub camera_view: Mat4,
 }
 
 impl Renderer {
@@ -290,6 +291,8 @@ impl Renderer {
             height,
 
             index_count: indices.len() as u32,
+
+            camera_view: Mat4::IDENTITY,
         }
     }
 
@@ -672,20 +675,24 @@ impl Renderer {
     fn update_uniform_buffer(&self) {
         let model =
             Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians());
-        let view = Mat4::look_at_rh(
-            glam::Vec3::new(0.0, 2.0, 3.0),
-            glam::Vec3::ZERO,
-            glam::Vec3::Y,
-        );
+        // let view = Mat4::look_at_rh(
+        //     glam::Vec3::new(0.0, 2.0, 3.0),
+        //     glam::Vec3::ZERO,
+        //     glam::Vec3::Y,
+        // );
         let mut proj = Mat4::perspective_rh(
-            45.0_f32.to_radians(),
+            70.0_f32.to_radians(),
             self.width as f32 / self.height as f32,
             0.1,
-            10.0
+            10.0,
         );
         proj.y_axis *= -1.0;
 
-        let uniform_buffer_data = UniformBufferData { model, view, proj };
+        let uniform_buffer_data = UniformBufferData {
+            model,
+            view: self.camera_view,
+            proj,
+        };
 
         let mut uniform_align = unsafe {
             Align::new(

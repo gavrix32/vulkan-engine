@@ -1,9 +1,10 @@
+use crate::input::Input;
 use crate::renderer::Renderer;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::time::Duration;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -14,7 +15,8 @@ pub struct State {
     height: u32,
     pub status: PumpStatus,
     window: Option<Window>,
-    renderer: Option<Renderer>,
+    pub renderer: Option<Renderer>,
+    pub input: Input,
 }
 
 impl State {
@@ -26,6 +28,7 @@ impl State {
             status: PumpStatus::Continue,
             window: None,
             renderer: None,
+            input: Input::default(),
         }
     }
 
@@ -82,7 +85,38 @@ impl ApplicationHandler for State {
                     renderer.height = resolution.height;
                 }
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                self.input.keyboard_event_queue.push_back(event)
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.input.mouse_button_event_queue.push_back((state, button))
+            }
+            WindowEvent::CursorMoved { position, .. } => self.input.cursor_pos = position,
             _ => (),
+        }
+    }
+
+    fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        match event {
+            DeviceEvent::MouseMotion { delta } => self.input.mouse_motion_event_queue.push_back(delta),
+            _ => (),
+        }
+    }
+
+    fn about_to_wait(&mut self, _: &ActiveEventLoop) {
+        self.input.reset_once_keys();
+        if let Some(event) = self.input.keyboard_event_queue.pop_front() {
+            self.input.send_keyboard_event(event);
+        }
+
+        self.input.reset_once_buttons();
+        if let Some((state, button)) = self.input.mouse_button_event_queue.pop_front() {
+            self.input.send_mouse_button_event(state, button);
+        }
+
+        self.input.reset_mouse_motion();
+        if let Some(motion) = self.input.mouse_motion_event_queue.pop_front() {
+            self.input.send_mouse_motion_event(motion);
         }
     }
 }
