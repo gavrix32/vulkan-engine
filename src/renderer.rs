@@ -9,8 +9,9 @@ use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
 use ash::util::Align;
 use ash::vk;
-use gltf::{Document, buffer};
-use log::warn;
+use glam::{Mat4, Vec4};
+use gltf::{Node, buffer};
+use log::{debug, warn};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::mem::offset_of;
 use std::sync::Arc;
@@ -54,121 +55,44 @@ impl Vertex {
     }
 }
 
-// fn add_indices(accessor: &Accessor, buffer_data: &[buffer::Data], dst: &mut Vec<u32>) {
-//     let view = accessor.view().unwrap();
-//     let buffer = &buffer_data[view.buffer().index()];
-//     let offset = view.offset() + accessor.offset();
-//     let length = accessor.count();
-//     let stride = accessor.size();
-//
-//     let bytes = &buffer[offset..offset + length * stride];
-//     match accessor.data_type() {
-//         DataType::U8 => {
-//             let slice: &[u8] = bytemuck::cast_slice(bytes);
-//             dst.extend(slice.iter().map(|&i| i as u32));
-//         }
-//         DataType::U16 => {
-//             let slice: &[u16] = bytemuck::cast_slice(bytes);
-//             dst.extend(slice.iter().map(|&i| i as u32));
-//         }
-//         DataType::U32 => {
-//             let slice: &[u32] = bytemuck::cast_slice(bytes);
-//             dst.extend(slice.iter().cloned());
-//         }
-//         _ => panic!("Unsupported index type"),
-//     }
-// let slice: &[u16] = bytemuck::cast_slice(bytes);
-// dst.extend(slice.iter().map(|&i| i as u32));
-// }
+fn traverse_node(
+    node: Node,
+    buffers: &Vec<buffer::Data>,
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    parent_transform: Mat4,
+) {
+    let local_transform = Mat4::from_cols_array_2d(&node.transform().matrix());
+    let global_transform = parent_transform * local_transform;
 
-fn get_mesh_data(document: Document, buffer_data: Vec<buffer::Data>) -> (Vec<Vertex>, Vec<u32>) {
-    let mut vertices: Vec<Vertex> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
-
-    for mesh in document.meshes() {
+    if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
-            let reader = primitive.reader(|buffer| Some(&buffer_data[buffer.index()]));
+            let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
-            let positions: Vec<[f32; 3]> = reader.read_positions().unwrap().collect();
-            let tex_coords: Vec<[f32; 2]> = reader
+            let tex_coords = reader
                 .read_tex_coords(0)
                 .map(|tc| tc.into_f32().collect())
-                .unwrap_or_default();
+                .unwrap_or_else(|| vec![[0.0, 0.0]]);
 
-            if let Some(read_indices) = reader.read_indices() {
-                for index in read_indices.into_u32() {
-                    let i = index as usize;
-                    let vertex = Vertex {
-                        position: positions[i],
-                        color: [1.0, 1.0, 1.0],
-                        tex_coord: tex_coords.get(i).copied().unwrap_or([0.0, 0.0]),
-                    };
-                    indices.push(vertices.len() as u32);
-                    vertices.push(vertex);
-                }
+            for index in reader.read_indices().unwrap().into_u32() {
+                indices.push(vertices.len() as u32 + index);
             }
 
-            // // indices
-            // if let Some(accessor) = primitive.indices() {
-            //     match accessor.data_type() {
-            //         DataType::U8 | DataType::U16 | DataType::U32 => {
-            //             add_indices(&accessor, &buffer_data, &mut indices)
-            //         }
-            //         _ => panic!("Unsupported index type"),
-            //     }
-            // }
-            //
-            // // texture coords
-            // let texture_coords: Option<&[[f32; 2]]> = primitive
-            //     .get(&gltf::Semantic::TexCoords(0))
-            //     .map(|accessor| {
-            //         let view = accessor.view().unwrap();
-            //         let buffer = &buffer_data[view.buffer().index()];
-            //         let offset = view.offset() + accessor.offset();
-            //         let bytes = &buffer[offset..offset + accessor.count() * 8]; // 2 * f32 == 8 bytes
-            //         bytemuck::cast_slice(bytes)
-            //     });
-            //
-            // // vertices
-            // if let Some(accessor) = primitive.get(&gltf::Semantic::Positions) {
-            //     let view = accessor.view().unwrap();
-            //     let buffer = &buffer_data[view.buffer().index()];
-            //     let offset = view.offset() + accessor.offset();
-            //     let length = accessor.count();
-            //     let stride = view.stride().unwrap_or(size_of::<&[f32; 3]>());
-            //
-            //     // let bytes = &buffer[offset..offset + length * 12];
-            //     // let positions: &[[f32; 3]] = bytemuck::cast_slice(bytes);
-            //
-            //     for i in 0..length {
-            //         let start = offset + i * stride;
-            //         let end = start + size_of::<[f32; 3]>();
-            //         let bytes = &buffer[start..end];
-            //         let position: [f32; 3] = *bytemuck::from_bytes(bytes);
-            //
-            //         vertices.push(Vertex {
-            //             position,
-            //             color: [1.0, 1.0, 1.0],
-            //             tex_coord: texture_coords.map_or([0.0, 0.0], |tc| tc[i]),
-            //         });
-            //     }
+            for (i, pos) in reader.read_positions().unwrap().enumerate() {
+                let trans_pos =
+                    (global_transform * Vec4::new(pos[0], pos[1], pos[2], 1.0)).to_array();
 
-            // vertices = Vec::with_capacity(length);
-            // for i in 0..length {
-            //     let start = offset + i * stride;
-            //     let end = start + size_of::<&[f32; 3]>();
-            //     let bytes = &buffer[start..end];
-            //
-            //     vertices.push(Vertex {
-            //         position: *bytemuck::from_bytes(bytes),
-            //         color: [1.0, 1.0, 1.0],
-            //         tex_coord: texture_coords.map_or([0.0, 0.0], |tc| tc[i]),
-            //     });
-            // }
-            // }
+                vertices.push(Vertex {
+                    position: [trans_pos[0], trans_pos[1], trans_pos[2]],
+                    color: [1.0, 1.0, 1.0],
+                    tex_coord: tex_coords.get(i).copied().unwrap_or([0.0, 0.0]),
+                });
+            }
         }
     }
-    (vertices, indices)
+    for child in node.children() {
+        traverse_node(child, buffers, vertices, indices, global_transform);
+    }
 }
 
 fn rgb_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
@@ -182,9 +106,9 @@ fn rgb_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 struct UniformBufferData {
-    model: glam::Mat4,
-    view: glam::Mat4,
-    proj: glam::Mat4,
+    model: Mat4,
+    view: Mat4,
+    proj: Mat4,
 }
 
 pub struct Renderer {
@@ -260,20 +184,38 @@ impl Renderer {
             gltf::import_slice(include_bytes!("../models/viking_room.glb"))
                 .expect("Failed to load model");
 
-        let (vertices, indices) = get_mesh_data(document, buffers);
+        let mut vertices: Vec<Vertex> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
 
-        let image_data = &images[0];
+        for scene in document.scenes() {
+            debug!("Scene: {}", scene.name().unwrap_or("Unnamed"));
+            for node in scene.nodes() {
+                debug!("Node: {}", node.name().unwrap_or("Unnamed"));
+                traverse_node(node, &buffers, &mut vertices, &mut indices, Mat4::IDENTITY);
+            }
+        }
+        debug!("Vertices: {}, Indices: {}", vertices.len(), indices.len());
 
-        let image_bytes = match image_data.format {
-            gltf::image::Format::R8G8B8A8 => &image_data.pixels,
-            gltf::image::Format::R8G8B8 => &rgb_to_rgba(&image_data.pixels),
-            _ => panic!("Unsupported texture format: {:?}", image_data.format),
+        let (image_bytes, image_width, image_height) = if !images.is_empty() {
+            let image_data = &images[0];
+            let image_width = image_data.width;
+            let image_height = image_data.height;
+
+            match image_data.format {
+                gltf::image::Format::R8G8B8A8 => (&image_data.pixels, image_width, image_height),
+                gltf::image::Format::R8G8B8 => {
+                    (&rgb_to_rgba(&image_data.pixels), image_width, image_height)
+                }
+                _ => panic!("Unsupported texture format: {:?}", image_data.format),
+            }
+        } else {
+            (&vec![255, 0, 255, 255], 1, 1)
         };
 
         let image = Image::from_bytes(
             image_bytes,
-            image_data.width,
-            image_data.height,
+            image_width,
+            image_height,
             &instance,
             &adapter,
             device.clone(),
@@ -729,21 +671,19 @@ impl Renderer {
 
     fn update_uniform_buffer(&self) {
         let model =
-            glam::Mat4::from_rotation_z(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians());
-        let view = glam::Mat4::look_at_rh(
-            glam::Vec3::new(2.0, 2.0, 2.0),
+            Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians());
+        let view = Mat4::look_at_rh(
+            glam::Vec3::new(0.0, 2.0, 3.0),
             glam::Vec3::ZERO,
-            glam::Vec3::Z,
+            glam::Vec3::Y,
         );
-        let mut proj = glam::Mat4::perspective_rh(
+        let mut proj = Mat4::perspective_rh(
             45.0_f32.to_radians(),
             self.width as f32 / self.height as f32,
             0.1,
-            10.0,
+            10.0
         );
-        let mut proj_array = proj.to_cols_array_2d();
-        proj_array[1][1] *= -1.0;
-        proj = glam::Mat4::from_cols_array_2d(&proj_array);
+        proj.y_axis *= -1.0;
 
         let uniform_buffer_data = UniformBufferData { model, view, proj };
 

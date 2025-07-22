@@ -5,10 +5,16 @@ mod vulkan;
 
 use crate::fps_counter::FpsCounter;
 use crate::state::State;
+use env_logger::Env;
 use winit::event_loop::EventLoop;
 
 fn main() {
-    env_logger::init();
+    let env = Env::default().default_filter_or(if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "info"
+    });
+    env_logger::Builder::from_env(env).init();
 
     let mut event_loop = EventLoop::new().unwrap();
     let mut state = State::new("Vulkan", 800, 600);
