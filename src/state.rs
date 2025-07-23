@@ -88,9 +88,10 @@ impl ApplicationHandler for State {
             WindowEvent::KeyboardInput { event, .. } => {
                 self.input.keyboard_event_queue.push_back(event)
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                self.input.mouse_button_event_queue.push_back((state, button))
-            }
+            WindowEvent::MouseInput { state, button, .. } => self
+                .input
+                .mouse_button_event_queue
+                .push_back((state, button)),
             WindowEvent::CursorMoved { position, .. } => self.input.cursor_pos = position,
             _ => (),
         }
@@ -98,7 +99,9 @@ impl ApplicationHandler for State {
 
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
         match event {
-            DeviceEvent::MouseMotion { delta } => self.input.mouse_motion_event_queue.push_back(delta),
+            DeviceEvent::MouseMotion { delta } => {
+                self.input.mouse_motion_event_queue.push_back(delta)
+            }
             _ => (),
         }
     }

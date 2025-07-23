@@ -11,11 +11,10 @@ use ash::util::Align;
 use ash::vk;
 use glam::{Mat4, Vec4};
 use gltf::{Node, buffer};
-use log::{debug, warn};
+use log::{info, warn};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::mem::offset_of;
 use std::sync::Arc;
-use std::time::Instant;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -55,18 +54,34 @@ impl Vertex {
     }
 }
 
+struct PrimitiveInfo {
+    first_index: u32,
+    index_count: u32,
+    texture_index: Option<usize>,
+}
+
 fn traverse_node(
     node: Node,
     buffers: &Vec<buffer::Data>,
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
+    primitive_infos: &mut Vec<PrimitiveInfo>,
     parent_transform: Mat4,
 ) {
+    info!("Node: {}", node.name().unwrap_or("Unnamed"));
+
     let local_transform = Mat4::from_cols_array_2d(&node.transform().matrix());
     let global_transform = parent_transform * local_transform;
 
     if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
+            let material = primitive.material();
+
+            let texture_index = material
+                .pbr_metallic_roughness()
+                .base_color_texture()
+                .map(|info| info.texture().source().index());
+
             let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
             let tex_coords = reader
@@ -74,7 +89,12 @@ fn traverse_node(
                 .map(|tc| tc.into_f32().collect())
                 .unwrap_or_else(|| vec![[0.0, 0.0]]);
 
-            for index in reader.read_indices().unwrap().into_u32() {
+            let first_index = indices.len() as u32;
+
+            let indices_iter = reader.read_indices().unwrap().into_u32();
+            let index_count = indices_iter.len() as u32;
+
+            for index in indices_iter {
                 indices.push(vertices.len() as u32 + index);
             }
 
@@ -88,10 +108,24 @@ fn traverse_node(
                     tex_coord: tex_coords.get(i).copied().unwrap_or([0.0, 0.0]),
                 });
             }
+
+            let primitive_info = PrimitiveInfo {
+                first_index,
+                index_count,
+                texture_index,
+            };
+            primitive_infos.push(primitive_info);
         }
     }
     for child in node.children() {
-        traverse_node(child, buffers, vertices, indices, global_transform);
+        traverse_node(
+            child,
+            buffers,
+            vertices,
+            indices,
+            primitive_infos,
+            global_transform,
+        );
     }
 }
 
@@ -99,6 +133,20 @@ fn rgb_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
     rgb_data
         .chunks_exact(3)
         .flat_map(|rgb_pixel| [rgb_pixel[0], rgb_pixel[1], rgb_pixel[2], 255])
+        .collect()
+}
+
+fn r_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
+    rgb_data
+        .chunks_exact(1)
+        .flat_map(|rgb_pixel| [rgb_pixel[0], 0, 0, 255])
+        .collect()
+}
+
+fn rg_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
+    rgb_data
+        .chunks_exact(2)
+        .flat_map(|rgb_pixel| [rgb_pixel[0], rgb_pixel[1], 0, 255])
         .collect()
 }
 
@@ -116,13 +164,13 @@ pub struct Renderer {
     index_buffer: Buffer,
     vertex_buffer: Buffer,
 
-    _image: Image,
+    _images: Vec<Image>,
 
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
 
     pipeline: Pipeline,
-    descriptor_sets: Vec<vk::DescriptorSet>,
+    descriptor_sets: Vec<Vec<vk::DescriptorSet>>,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
 
@@ -139,14 +187,13 @@ pub struct Renderer {
     in_flight_fences: Vec<vk::Fence>,
     frame_in_flight_index: usize,
 
-    timer: Instant,
-
     pub framebuffer_resized: bool,
     pub width: u32,
     pub height: u32,
 
-    index_count: u32,
     pub camera_view: Mat4,
+
+    primitive_infos: Vec<PrimitiveInfo>,
 }
 
 impl Renderer {
@@ -181,47 +228,88 @@ impl Renderer {
         let command_pool =
             Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
 
-        let (document, buffers, images) =
-            gltf::import_slice(include_bytes!("../models/viking_room.glb"))
+        info!("Importing model");
+        let (document, buffers_data, images_data) =
+            gltf::import_slice(include_bytes!("../models/sponza.glb"))
                 .expect("Failed to load model");
 
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
 
+        let mut primitive_infos: Vec<PrimitiveInfo> = Vec::new();
+
+        info!("Parsing model");
         for scene in document.scenes() {
-            debug!("Scene: {}", scene.name().unwrap_or("Unnamed"));
+            info!("Scene: {}", scene.name().unwrap_or("Unnamed"));
             for node in scene.nodes() {
-                debug!("Node: {}", node.name().unwrap_or("Unnamed"));
-                traverse_node(node, &buffers, &mut vertices, &mut indices, Mat4::IDENTITY);
+                traverse_node(
+                    node,
+                    &buffers_data,
+                    &mut vertices,
+                    &mut indices,
+                    &mut primitive_infos,
+                    Mat4::IDENTITY,
+                );
             }
         }
-        debug!("Vertices: {}, Indices: {}", vertices.len(), indices.len());
+        info!("Vertices: {}, Indices: {}", vertices.len(), indices.len());
 
-        let (image_bytes, image_width, image_height) = if !images.is_empty() {
-            let image_data = &images[0];
-            let image_width = image_data.width;
-            let image_height = image_data.height;
+        let albedo_images_data: Vec<_> = primitive_infos
+            .iter()
+            .map(|option_i| option_i.texture_index.map(|i| &images_data[i]))
+            .collect();
 
-            match image_data.format {
-                gltf::image::Format::R8G8B8A8 => (&image_data.pixels, image_width, image_height),
-                gltf::image::Format::R8G8B8 => {
-                    (&rgb_to_rgba(&image_data.pixels), image_width, image_height)
-                }
-                _ => panic!("Unsupported texture format: {:?}", image_data.format),
+        let mut images = Vec::new();
+
+        for albedo_image_data in albedo_images_data {
+            if let Some(albedo_image_data) = albedo_image_data {
+                let (image_bytes, image_width, image_height) = {
+                    let image_data = albedo_image_data;
+                    let image_width = image_data.width;
+                    let image_height = image_data.height;
+
+                    match image_data.format {
+                        gltf::image::Format::R8G8B8A8 => {
+                            (&image_data.pixels, image_width, image_height)
+                        }
+                        gltf::image::Format::R8G8B8 => {
+                            (&rgb_to_rgba(&image_data.pixels), image_width, image_height)
+                        }
+                        gltf::image::Format::R8G8 => {
+                            (&rg_to_rgba(&image_data.pixels), image_width, image_height)
+                        }
+                        gltf::image::Format::R8 => {
+                            (&r_to_rgba(&image_data.pixels), image_width, image_height)
+                        }
+                        _ => panic!("Unsupported texture format: {:?}", image_data.format),
+                    }
+                };
+
+                let image = Image::from_bytes(
+                    image_bytes,
+                    image_width,
+                    image_height,
+                    &instance,
+                    &adapter,
+                    device.clone(),
+                    command_pool,
+                );
+
+                images.push(image);
+            } else {
+                let image = Image::from_bytes(
+                    &[255, 0, 255, 255],
+                    1,
+                    1,
+                    &instance,
+                    &adapter,
+                    device.clone(),
+                    command_pool,
+                );
+
+                images.push(image);
             }
-        } else {
-            (&vec![255, 0, 255, 255], 1, 1)
-        };
-
-        let image = Image::from_bytes(
-            image_bytes,
-            image_width,
-            image_height,
-            &instance,
-            &adapter,
-            device.clone(),
-            command_pool,
-        );
+        }
 
         let vertex_buffer = Self::create_vertex_buffer(
             &instance,
@@ -243,13 +331,16 @@ impl Renderer {
 
         let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, device.clone());
 
-        let descriptor_pool = Self::create_descriptor_pool(&device.ash_device);
+        let descriptor_pool = Self::create_descriptor_pool(
+            &device.ash_device,
+            (MAX_FRAMES_IN_FLIGHT * images.len()) as u32,
+        );
         let descriptor_sets = Self::create_descriptor_sets(
             &device.ash_device,
             descriptor_set_layout,
             descriptor_pool,
             &uniform_buffers,
-            &image,
+            &images,
         );
 
         let command_buffers = Self::create_command_buffers(&device.ash_device, command_pool);
@@ -273,7 +364,7 @@ impl Renderer {
             command_pool,
             command_buffers,
 
-            _image: image,
+            _images: images,
 
             vertex_buffer,
             index_buffer,
@@ -284,15 +375,12 @@ impl Renderer {
             in_flight_fences,
             frame_in_flight_index: 0,
 
-            timer: Instant::now(),
-
             framebuffer_resized: false,
             width,
             height,
 
-            index_count: indices.len() as u32,
-
             camera_view: Mat4::IDENTITY,
+            primitive_infos,
         }
     }
 
@@ -439,14 +527,14 @@ impl Renderer {
         uniform_buffers
     }
 
-    fn create_descriptor_pool(device: &ash::Device) -> vk::DescriptorPool {
+    fn create_descriptor_pool(device: &ash::Device, pool_size: u32) -> vk::DescriptorPool {
         let uniform_buffer_descriptor_pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32);
+            .descriptor_count(pool_size);
 
         let sampler_descriptor_pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32);
+            .descriptor_count(pool_size);
 
         let descriptor_pool_sizes = [
             uniform_buffer_descriptor_pool_size,
@@ -455,7 +543,7 @@ impl Renderer {
 
         let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&descriptor_pool_sizes)
-            .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
+            .max_sets(pool_size);
 
         unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None) }
             .expect("Failed to create descriptor pool")
@@ -466,55 +554,61 @@ impl Renderer {
         descriptor_set_layout: vk::DescriptorSetLayout,
         descriptor_pool: vk::DescriptorPool,
         uniform_buffers: &Vec<Buffer>,
-        image: &Image,
-    ) -> Vec<vk::DescriptorSet> {
-        let mut descriptor_set_layouts = Vec::new();
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            descriptor_set_layouts.push(descriptor_set_layout);
-        }
+        images: &[Image],
+    ) -> Vec<Vec<vk::DescriptorSet>> {
+        let descriptor_set_layouts =
+            vec![descriptor_set_layout; images.len() * MAX_FRAMES_IN_FLIGHT];
 
-        let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
+        let allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&descriptor_set_layouts);
 
-        let descriptor_sets =
-            unsafe { device.allocate_descriptor_sets(&descriptor_set_allocate_info) }
-                .expect("Failed to allocate descriptor sets");
+        let flat_descriptor_sets = unsafe { device.allocate_descriptor_sets(&allocate_info) }
+            .expect("Failed to allocate descriptor sets");
 
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let descriptor_buffer_info = vk::DescriptorBufferInfo::default()
-                .buffer(uniform_buffers[i].vk_buffer)
-                .offset(0)
-                .range(vk::WHOLE_SIZE);
-            let descriptor_buffer_infos = [descriptor_buffer_info];
+        let mut descriptor_sets =
+            vec![vec![vk::DescriptorSet::null(); MAX_FRAMES_IN_FLIGHT]; images.len()];
 
-            let write_descriptor_buffer = vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[i])
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .buffer_info(&descriptor_buffer_infos);
+        for (image_idx, image) in images.iter().enumerate() {
+            for frame in 0..MAX_FRAMES_IN_FLIGHT {
+                let flat_index = image_idx * MAX_FRAMES_IN_FLIGHT + frame;
 
-            let descriptor_image_info = vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image_view(image.view)
-                .sampler(image.sampler.unwrap());
-            let descriptor_image_infos = [descriptor_image_info];
+                let descriptor_set = flat_descriptor_sets[flat_index];
+                descriptor_sets[image_idx][frame] = descriptor_set;
 
-            let write_descriptor_image = vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[i])
-                .dst_binding(1)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .image_info(&descriptor_image_infos);
+                let descriptor_buffer_info = vk::DescriptorBufferInfo::default()
+                    .buffer(uniform_buffers[frame].vk_buffer)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE);
+                let descriptor_buffer_infos = [descriptor_buffer_info];
 
-            let descriptor_writes = [write_descriptor_buffer, write_descriptor_image];
+                let write_descriptor_buffer = vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .buffer_info(&descriptor_buffer_infos);
 
-            unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
+                let descriptor_image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(image.view)
+                    .sampler(image.sampler.unwrap());
+                let descriptor_image_infos = [descriptor_image_info];
+
+                let write_descriptor_image = vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .image_info(&descriptor_image_infos);
+
+                let descriptor_writes = [write_descriptor_buffer, write_descriptor_image];
+
+                unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
+            }
         }
-
         descriptor_sets
     }
 
@@ -639,31 +733,38 @@ impl Renderer {
                 .ash_device
                 .cmd_set_scissor(command_buffer, 0, &scissors);
 
-            self.device.ash_device.cmd_bind_vertex_buffers(
-                command_buffer,
-                0,
-                &[self.vertex_buffer.vk_buffer],
-                &[0],
-            );
-            self.device.ash_device.cmd_bind_index_buffer(
-                command_buffer,
-                self.index_buffer.vk_buffer,
-                vk::DeviceSize::default(),
-                vk::IndexType::UINT32,
-            );
+            for (i, primitive_info) in self.primitive_infos.iter().enumerate() {
+                self.device.ash_device.cmd_bind_vertex_buffers(
+                    command_buffer,
+                    0,
+                    &[self.vertex_buffer.vk_buffer],
+                    &[0],
+                );
+                self.device.ash_device.cmd_bind_index_buffer(
+                    command_buffer,
+                    self.index_buffer.vk_buffer,
+                    vk::DeviceSize::default(),
+                    vk::IndexType::UINT32,
+                );
 
-            self.device.ash_device.cmd_bind_descriptor_sets(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.layout,
-                0,
-                &[self.descriptor_sets[self.frame_in_flight_index]],
-                &[],
-            );
+                self.device.ash_device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline.layout,
+                    0,
+                    &[self.descriptor_sets[i][self.frame_in_flight_index]],
+                    &[],
+                );
 
-            self.device
-                .ash_device
-                .cmd_draw_indexed(command_buffer, self.index_count, 1, 0, 0, 0);
+                self.device.ash_device.cmd_draw_indexed(
+                    command_buffer,
+                    primitive_info.index_count,
+                    1,
+                    primitive_info.first_index,
+                    0,
+                    0,
+                );
+            }
 
             self.device.ash_device.cmd_end_render_pass(command_buffer);
         };
@@ -674,7 +775,8 @@ impl Renderer {
 
     fn update_uniform_buffer(&self) {
         let model =
-            Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians());
+            // Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians());
+            Mat4::IDENTITY;
         // let view = Mat4::look_at_rh(
         //     glam::Vec3::new(0.0, 2.0, 3.0),
         //     glam::Vec3::ZERO,
@@ -683,8 +785,8 @@ impl Renderer {
         let mut proj = Mat4::perspective_rh(
             70.0_f32.to_radians(),
             self.width as f32 / self.height as f32,
-            0.1,
-            10.0,
+            0.01,
+            1000.0,
         );
         proj.y_axis *= -1.0;
 

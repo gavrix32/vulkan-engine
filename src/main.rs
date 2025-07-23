@@ -23,7 +23,7 @@ fn main() {
     env_logger::Builder::from_env(env).init();
 
     let mut event_loop = EventLoop::new().unwrap();
-    let mut state = State::new("Vulkan", 800, 600);
+    let mut state = State::new("Vulkan", 1280, 720);
     let mut fps_counter = FpsCounter::default().log_fps(Some(1000));
 
     let mut camera = Camera::default();
