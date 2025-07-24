@@ -7,6 +7,7 @@ use ash::util::Align;
 use ash::vk;
 use image::ImageReader;
 use log::error;
+use std::cmp::max;
 use std::io;
 use std::sync::Arc;
 
@@ -28,9 +29,15 @@ impl Image {
         format: vk::Format,
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
+        mipmapping: bool,
     ) -> Self {
         let layout = vk::ImageLayout::UNDEFINED;
         let image_type = vk::ImageType::TYPE_2D;
+        let mip_levels = if mipmapping {
+            max(width, height).ilog2() + 1
+        } else {
+            1
+        };
 
         let image_create_info = vk::ImageCreateInfo::default()
             .image_type(image_type)
@@ -39,12 +46,16 @@ impl Image {
                 height,
                 depth: 1,
             })
-            .mip_levels(1)
+            .mip_levels(mip_levels)
             .array_layers(1)
             .format(format)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(layout)
-            .usage(usage)
+            .usage(if mipmapping {
+                vk::ImageUsageFlags::TRANSFER_SRC | usage
+            } else {
+                usage
+            })
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(vk::SampleCountFlags::TYPE_1);
 
@@ -73,7 +84,7 @@ impl Image {
         unsafe { device.ash_device.bind_image_memory(vk_image, memory, 0) }
             .expect("Failed to bind image memory");
 
-        let view = create_image_view(device.clone(), vk_image, format, aspect);
+        let view = create_image_view(device.clone(), vk_image, format, aspect, mip_levels);
 
         Self {
             device,
@@ -91,6 +102,7 @@ impl Image {
         adapter: &Adapter,
         device: Arc<Device>,
         command_pool: vk::CommandPool,
+        mipmapping: bool,
     ) -> Self {
         let image = ImageReader::new(buffer)
             .with_guessed_format()
@@ -108,6 +120,7 @@ impl Image {
             adapter,
             device,
             command_pool,
+            mipmapping,
         )
     }
 
@@ -119,8 +132,14 @@ impl Image {
         adapter: &Adapter,
         device: Arc<Device>,
         command_pool: vk::CommandPool,
+        mip_mapping: bool,
     ) -> Self {
         let size = (width * height * 4) as vk::DeviceSize;
+        let mip_levels = if mip_mapping {
+            max(width, height).ilog2() + 1
+        } else {
+            1
+        };
 
         let mut staging_buffer = Buffer::new(
             instance,
@@ -150,12 +169,18 @@ impl Image {
                 height,
                 depth: 1,
             })
-            .mip_levels(1)
+            .mip_levels(mip_levels)
             .array_layers(1)
             .format(format)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(layout)
-            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+            .usage(if mip_mapping {
+                vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::SAMPLED
+            } else {
+                vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED
+            })
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(vk::SampleCountFlags::TYPE_1);
 
@@ -190,6 +215,7 @@ impl Image {
             vk_image,
             layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            mip_levels,
         );
         copy_from_buffer(
             device.clone(),
@@ -199,21 +225,37 @@ impl Image {
             height,
             command_pool,
         );
-        transition_layout(
-            device.clone(),
-            command_pool,
-            vk_image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        );
+        if mip_mapping {
+            generate_mipmaps(
+                instance,
+                device.clone(),
+                adapter,
+                command_pool,
+                vk_image,
+                format,
+                width,
+                height,
+                mip_levels,
+            );
+        } else {
+            transition_layout(
+                device.clone(),
+                command_pool,
+                vk_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                mip_levels,
+            );
+        }
 
         let view = create_image_view(
             device.clone(),
             vk_image,
             format,
             vk::ImageAspectFlags::COLOR,
+            mip_levels,
         );
-        let sampler = create_sampler(device.clone());
+        let sampler = create_sampler(device.clone(), mip_levels);
 
         Self {
             device,
@@ -225,23 +267,184 @@ impl Image {
     }
 }
 
+fn generate_mipmaps(
+    instance: &Instance,
+    device: Arc<Device>,
+    adapter: &Adapter,
+    command_pool: vk::CommandPool,
+    vk_image: vk::Image,
+    format: vk::Format,
+    width: u32,
+    height: u32,
+    mip_levels: u32,
+) {
+    let format_props = unsafe {
+        instance
+            .ash_instance
+            .get_physical_device_format_properties(adapter.physical_device, format)
+    };
+    if format_props.optimal_tiling_features & vk::FormatFeatureFlags::SAMPLED_IMAGE
+        == vk::FormatFeatureFlags::empty()
+    {
+        error!("Texture image format does not support linear blitting");
+    }
+
+    let mut subresource_range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_array_layer(0)
+        .layer_count(1)
+        .level_count(1);
+
+    let mut barrier = vk::ImageMemoryBarrier::default()
+        .image(vk_image)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .subresource_range(subresource_range);
+
+    let command_buffers = CommandBuffer::begin_single_time_commands(device.clone(), command_pool);
+
+    let mut mip_width = width as i32;
+    let mut mip_height = height as i32;
+
+    for i in 1..mip_levels {
+        subresource_range = subresource_range.base_mip_level(i - 1);
+
+        barrier = barrier
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .subresource_range(subresource_range);
+
+        unsafe {
+            device.ash_device.cmd_pipeline_barrier(
+                command_buffers[0],
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            )
+        };
+
+        let blit = vk::ImageBlit::default()
+            .src_offsets([
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: mip_width,
+                    y: mip_height,
+                    z: 1,
+                },
+            ])
+            .src_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(i - 1)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .dst_offsets([
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: if mip_width > 1 { mip_width / 2 } else { 1 },
+                    y: if mip_height > 1 { mip_height / 2 } else { 1 },
+                    z: 1,
+                },
+            ])
+            .dst_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(i)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            );
+
+        unsafe {
+            device.ash_device.cmd_blit_image(
+                command_buffers[0],
+                vk_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                vk_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[blit],
+                vk::Filter::LINEAR,
+            )
+        };
+
+        barrier = barrier
+            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ);
+
+        unsafe {
+            device.ash_device.cmd_pipeline_barrier(
+                command_buffers[0],
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            )
+        };
+
+        if mip_width > 1 {
+            mip_width /= 2
+        }
+        if mip_height > 1 {
+            mip_height /= 2
+        }
+    }
+
+    subresource_range = subresource_range.base_mip_level(mip_levels - 1);
+
+    barrier = barrier
+        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .subresource_range(subresource_range);
+
+    unsafe {
+        device.ash_device.cmd_pipeline_barrier(
+            command_buffers[0],
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        )
+    };
+
+    CommandBuffer::end_single_time_commands(
+        device.clone(),
+        command_pool,
+        command_buffers,
+        device.graphics_queue,
+    );
+}
+
 fn transition_layout(
     device: Arc<Device>,
     command_pool: vk::CommandPool,
     image: vk::Image,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
+    mip_levels: u32,
 ) {
     let mut barrier = vk::ImageMemoryBarrier::default()
-        .old_layout(old_layout)
-        .new_layout(new_layout)
+        .image(image)
         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
+        .old_layout(old_layout)
+        .new_layout(new_layout)
         .subresource_range(vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
             base_mip_level: 0,
-            level_count: 1,
+            level_count: mip_levels,
             base_array_layer: 0,
             layer_count: 1,
         });
@@ -343,6 +546,7 @@ fn create_image_view(
     image: vk::Image,
     format: vk::Format,
     aspect: vk::ImageAspectFlags,
+    mip_levels: u32,
 ) -> vk::ImageView {
     let image_view_create_info = vk::ImageViewCreateInfo::default()
         .image(image)
@@ -351,7 +555,7 @@ fn create_image_view(
         .subresource_range(vk::ImageSubresourceRange {
             aspect_mask: aspect,
             base_mip_level: 0,
-            level_count: 1,
+            level_count: mip_levels,
             base_array_layer: 0,
             layer_count: 1,
         });
@@ -364,7 +568,7 @@ fn create_image_view(
     .expect("Failed to create image view")
 }
 
-fn create_sampler(device: Arc<Device>) -> vk::Sampler {
+fn create_sampler(device: Arc<Device>, mip_levels: u32) -> vk::Sampler {
     let sampler_create_info = vk::SamplerCreateInfo::default()
         .mag_filter(vk::Filter::LINEAR)
         .min_filter(vk::Filter::LINEAR)
@@ -380,7 +584,7 @@ fn create_sampler(device: Arc<Device>) -> vk::Sampler {
         .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
         .mip_lod_bias(0.0)
         .min_lod(0.0)
-        .max_lod(0.0);
+        .max_lod(mip_levels as f32);
 
     unsafe { device.ash_device.create_sampler(&sampler_create_info, None) }
         .expect("Failed to create sampler")

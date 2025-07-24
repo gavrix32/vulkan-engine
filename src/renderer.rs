@@ -293,6 +293,7 @@ impl Renderer {
                     &adapter,
                     device.clone(),
                     command_pool,
+                    true,
                 );
 
                 images.push(image);
@@ -305,6 +306,7 @@ impl Renderer {
                     &adapter,
                     device.clone(),
                     command_pool,
+                    true,
                 );
 
                 images.push(image);

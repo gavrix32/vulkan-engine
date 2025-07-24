@@ -224,6 +224,7 @@ fn init(
         vk::Format::D32_SFLOAT_S8_UINT,
         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
         vk::ImageAspectFlags::DEPTH,
+        false,
     );
     let framebuffers = create_framebuffers(
         device.clone(),
