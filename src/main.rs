@@ -37,6 +37,9 @@ fn main() {
         }
 
         let mut speed = fps_counter.delta.as_secs_f32() * 5.0;
+        if state.input.pressed_keys.contains(&KeyCode::ControlLeft) {
+            speed *= 2.0;
+        }
 
         for key in &state.input.pressed_keys {
             match key {
@@ -46,7 +49,6 @@ fn main() {
                 KeyCode::KeyD => camera.move_local_x(speed),
                 KeyCode::Space => camera.move_local_y(speed),
                 KeyCode::ShiftLeft => camera.move_local_y(-speed),
-                KeyCode::ControlLeft => speed *= 2.0,
                 _ => {}
             }
         }
