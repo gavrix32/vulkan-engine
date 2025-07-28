@@ -14,6 +14,7 @@ pub struct Swapchain {
     pub images: Vec<vk::Image>,
     pub extent: vk::Extent2D,
     pub image_views: Vec<vk::ImageView>,
+    pub color_image: Image,
     pub depth_image: Image,
     pub framebuffers: Vec<vk::Framebuffer>,
 }
@@ -27,6 +28,7 @@ impl Swapchain {
         render_pass: vk::RenderPass,
         width: u32,
         height: u32,
+        msaa_samples: vk::SampleCountFlags,
     ) -> Self {
         let (
             swapchain_device,
@@ -34,6 +36,7 @@ impl Swapchain {
             images,
             extent,
             image_views,
+            color_image,
             depth_image,
             framebuffers,
         ) = init(
@@ -44,6 +47,7 @@ impl Swapchain {
             render_pass,
             width,
             height,
+            msaa_samples,
         );
 
         Self {
@@ -53,6 +57,7 @@ impl Swapchain {
             images,
             extent,
             image_views,
+            color_image,
             depth_image,
             framebuffers,
         }
@@ -88,6 +93,7 @@ impl Swapchain {
         render_pass: vk::RenderPass,
         width: u32,
         height: u32,
+        msaa_samples: vk::SampleCountFlags,
     ) {
         self.device.wait_idle();
 
@@ -99,6 +105,7 @@ impl Swapchain {
             images,
             extent,
             image_views,
+            color_image,
             depth_image,
             framebuffers,
         ) = init(
@@ -109,6 +116,7 @@ impl Swapchain {
             render_pass,
             width,
             height,
+            msaa_samples,
         );
 
         self.swapchain_device = swapchain_device;
@@ -116,6 +124,7 @@ impl Swapchain {
         self.images = images;
         self.extent = extent;
         self.image_views = image_views;
+        self.color_image = color_image;
         self.depth_image = depth_image;
         self.framebuffers = framebuffers;
     }
@@ -161,12 +170,14 @@ fn init(
     render_pass: vk::RenderPass,
     width: u32,
     height: u32,
+    msaa_samples: vk::SampleCountFlags,
 ) -> (
     khr::swapchain::Device,
     vk::SwapchainKHR,
     Vec<vk::Image>,
     vk::Extent2D,
     Vec<vk::ImageView>,
+    Image,
     Image,
     Vec<vk::Framebuffer>,
 ) {
@@ -215,6 +226,18 @@ fn init(
     let images = unsafe { swapchain_device.get_swapchain_images(swapchain_khr) }
         .expect("Failed to get swapchain images");
     let image_views = create_image_views(&images, surface_format.format, device.clone());
+    let color_image = Image::new(
+        instance,
+        adapter,
+        device.clone(),
+        width,
+        height,
+        surface_format.format,
+        vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        vk::ImageAspectFlags::COLOR,
+        false,
+        msaa_samples,
+    );
     let depth_image = Image::new(
         &instance,
         &adapter,
@@ -225,11 +248,13 @@ fn init(
         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
         vk::ImageAspectFlags::DEPTH,
         false,
+        msaa_samples,
     );
     let framebuffers = create_framebuffers(
         device.clone(),
         extent,
         &image_views,
+        &color_image,
         &depth_image,
         render_pass,
     );
@@ -240,6 +265,7 @@ fn init(
         images,
         extent,
         image_views,
+        color_image,
         depth_image,
         framebuffers,
     )
@@ -288,13 +314,14 @@ fn create_framebuffers(
     device: Arc<Device>,
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: &Vec<vk::ImageView>,
+    color_image: &Image,
     depth_image: &Image,
     render_pass: vk::RenderPass,
 ) -> Vec<vk::Framebuffer> {
     let mut framebuffers = Vec::new();
 
     for i in 0..swapchain_image_views.len() {
-        let attachments = [swapchain_image_views[i], depth_image.view];
+        let attachments = [color_image.view, depth_image.view, swapchain_image_views[i]];
         let framebuffer_create_info = vk::FramebufferCreateInfo::default()
             .render_pass(render_pass)
             .attachments(&attachments)

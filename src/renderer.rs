@@ -187,6 +187,8 @@ pub struct Renderer {
     in_flight_fences: Vec<vk::Fence>,
     frame_in_flight_index: usize,
 
+    msaa_samples: vk::SampleCountFlags,
+
     pub framebuffer_resized: bool,
     pub width: u32,
     pub height: u32,
@@ -207,8 +209,12 @@ impl Renderer {
         let surface = Surface::new(&instance, display_handle, window_handle);
         let adapter = Adapter::new(&instance, &surface);
         let device = Arc::new(Device::new(&instance, &adapter));
-        let render_pass =
-            RenderPass::new(device.clone(), Swapchain::get_format(&adapter, &surface));
+        let msaa_samples = Self::get_max_usable_sample_count(&instance, &adapter);
+        let render_pass = RenderPass::new(
+            device.clone(),
+            Swapchain::get_format(&adapter, &surface),
+            msaa_samples,
+        );
 
         let swapchain = Swapchain::new(
             &instance,
@@ -218,12 +224,18 @@ impl Renderer {
             render_pass.vk_render_pass,
             width,
             height,
+            msaa_samples,
         );
 
         let descriptor_set_layout = Self::create_descriptor_set_layout(&device.ash_device);
         let descriptor_set_layouts = [descriptor_set_layout];
 
-        let pipeline = Pipeline::new(device.clone(), &render_pass, &descriptor_set_layouts);
+        let pipeline = Pipeline::new(
+            device.clone(),
+            &render_pass,
+            &descriptor_set_layouts,
+            msaa_samples,
+        );
 
         let command_pool =
             Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
@@ -294,6 +306,7 @@ impl Renderer {
                     device.clone(),
                     command_pool,
                     true,
+                    vk::SampleCountFlags::TYPE_1,
                 );
 
                 images.push(image);
@@ -307,6 +320,7 @@ impl Renderer {
                     device.clone(),
                     command_pool,
                     true,
+                    vk::SampleCountFlags::TYPE_1,
                 );
 
                 images.push(image);
@@ -377,6 +391,8 @@ impl Renderer {
             in_flight_fences,
             frame_in_flight_index: 0,
 
+            msaa_samples,
+
             framebuffer_resized: false,
             width,
             height,
@@ -384,6 +400,37 @@ impl Renderer {
             camera_view: Mat4::IDENTITY,
             primitive_infos,
         }
+    }
+
+    fn get_max_usable_sample_count(instance: &Instance, adapter: &Adapter) -> vk::SampleCountFlags {
+        let properties = unsafe {
+            instance
+                .ash_instance
+                .get_physical_device_properties(adapter.physical_device)
+        };
+        let counts = properties.limits.framebuffer_color_sample_counts
+            & properties.limits.framebuffer_depth_sample_counts;
+
+        if counts.contains(vk::SampleCountFlags::TYPE_64) {
+            return vk::SampleCountFlags::TYPE_64;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_32) {
+            return vk::SampleCountFlags::TYPE_32;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_16) {
+            return vk::SampleCountFlags::TYPE_16;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_8) {
+            return vk::SampleCountFlags::TYPE_8;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_4) {
+            return vk::SampleCountFlags::TYPE_4;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_2) {
+            return vk::SampleCountFlags::TYPE_2;
+        }
+
+        vk::SampleCountFlags::TYPE_1
     }
 
     fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
@@ -920,6 +967,7 @@ impl Renderer {
             self.render_pass.vk_render_pass,
             self.width,
             self.height,
+            self.msaa_samples,
         );
     }
 }

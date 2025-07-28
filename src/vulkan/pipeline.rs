@@ -16,6 +16,7 @@ impl Pipeline {
         device: Arc<Device>,
         render_pass: &RenderPass,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
+        msaa_samples: vk::SampleCountFlags,
     ) -> Self {
         let vertex_shader_bytes = include_bytes!("../shaders/spirv/vertex.spv");
         let vertex_shader_code =
@@ -72,7 +73,7 @@ impl Pipeline {
 
         let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
             .sample_shading_enable(false)
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            .rasterization_samples(msaa_samples);
 
         let color_blend_attachment_state = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)

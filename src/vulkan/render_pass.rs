@@ -8,16 +8,20 @@ pub struct RenderPass {
 }
 
 impl RenderPass {
-    pub fn new(device: Arc<Device>, image_format: vk::Format) -> Self {
+    pub fn new(
+        device: Arc<Device>,
+        image_format: vk::Format,
+        msaa_samples: vk::SampleCountFlags,
+    ) -> Self {
         let color_attachment_description = vk::AttachmentDescription::default()
             .format(image_format)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .samples(msaa_samples)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
         let color_attachment_reference = vk::AttachmentReference::default()
             .attachment(0)
@@ -26,7 +30,7 @@ impl RenderPass {
 
         let depth_attachment_description = vk::AttachmentDescription::default()
             .format(vk::Format::D32_SFLOAT_S8_UINT)
-            .samples(vk::SampleCountFlags::TYPE_1)
+            .samples(msaa_samples)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
@@ -38,12 +42,32 @@ impl RenderPass {
             .attachment(1)
             .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-        let attachment_descriptions = [color_attachment_description, depth_attachment_description];
+        let color_attachment_resolve_description = vk::AttachmentDescription::default()
+            .format(image_format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+
+        let color_attachment_resolve_reference = vk::AttachmentReference::default()
+            .attachment(2)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let color_attachment_resolve_references = [color_attachment_resolve_reference];
+
+        let attachment_descriptions = [
+            color_attachment_description,
+            depth_attachment_description,
+            color_attachment_resolve_description,
+        ];
 
         let subpass_description = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&color_attachment_references)
-            .depth_stencil_attachment(&depth_attachment_reference);
+            .depth_stencil_attachment(&depth_attachment_reference)
+            .resolve_attachments(&color_attachment_resolve_references);
         let subpass_descriptions = [subpass_description];
 
         let subpass_dependency = vk::SubpassDependency::default()

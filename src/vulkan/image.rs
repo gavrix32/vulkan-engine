@@ -30,6 +30,7 @@ impl Image {
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
         mipmapping: bool,
+        msaa_samples: vk::SampleCountFlags,
     ) -> Self {
         let layout = vk::ImageLayout::UNDEFINED;
         let image_type = vk::ImageType::TYPE_2D;
@@ -57,7 +58,7 @@ impl Image {
                 usage
             })
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .samples(vk::SampleCountFlags::TYPE_1);
+            .samples(msaa_samples);
 
         let vk_image = unsafe { device.ash_device.create_image(&image_create_info, None) }
             .expect("Failed to create image");
@@ -103,6 +104,7 @@ impl Image {
         device: Arc<Device>,
         command_pool: vk::CommandPool,
         mipmapping: bool,
+        msaa_samples: vk::SampleCountFlags,
     ) -> Self {
         let image = ImageReader::new(buffer)
             .with_guessed_format()
@@ -121,6 +123,7 @@ impl Image {
             device,
             command_pool,
             mipmapping,
+            msaa_samples,
         )
     }
 
@@ -133,6 +136,7 @@ impl Image {
         device: Arc<Device>,
         command_pool: vk::CommandPool,
         mip_mapping: bool,
+        msaa_samples: vk::SampleCountFlags,
     ) -> Self {
         let size = (width * height * 4) as vk::DeviceSize;
         let mip_levels = if mip_mapping {
@@ -182,7 +186,7 @@ impl Image {
                 vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED
             })
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .samples(vk::SampleCountFlags::TYPE_1);
+            .samples(msaa_samples);
 
         let vk_image = unsafe { device.ash_device.create_image(&image_create_info, None) }
             .expect("Failed to create image");
