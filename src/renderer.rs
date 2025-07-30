@@ -165,6 +165,7 @@ pub struct Renderer {
     vertex_buffer: Buffer,
 
     _images: Vec<Image>,
+    image_count: usize,
 
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
@@ -266,66 +267,60 @@ impl Renderer {
         }
         info!("Vertices: {}, Indices: {}", vertices.len(), indices.len());
 
-        let albedo_images_data: Vec<_> = primitive_infos
-            .iter()
-            .map(|option_i| option_i.texture_index.map(|i| &images_data[i]))
-            .collect();
-
         let mut images = Vec::new();
 
-        for albedo_image_data in albedo_images_data {
-            if let Some(albedo_image_data) = albedo_image_data {
-                let (image_bytes, image_width, image_height) = {
-                    let image_data = albedo_image_data;
-                    let image_width = image_data.width;
-                    let image_height = image_data.height;
+        for image_data in &images_data {
+            let (image_bytes, image_width, image_height) = {
+                let image_width = image_data.width;
+                let image_height = image_data.height;
 
-                    match image_data.format {
-                        gltf::image::Format::R8G8B8A8 => {
-                            (&image_data.pixels, image_width, image_height)
-                        }
-                        gltf::image::Format::R8G8B8 => {
-                            (&rgb_to_rgba(&image_data.pixels), image_width, image_height)
-                        }
-                        gltf::image::Format::R8G8 => {
-                            (&rg_to_rgba(&image_data.pixels), image_width, image_height)
-                        }
-                        gltf::image::Format::R8 => {
-                            (&r_to_rgba(&image_data.pixels), image_width, image_height)
-                        }
-                        _ => panic!("Unsupported texture format: {:?}", image_data.format),
+                match image_data.format {
+                    gltf::image::Format::R8G8B8A8 => {
+                        (&image_data.pixels, image_width, image_height)
                     }
-                };
+                    gltf::image::Format::R8G8B8 => {
+                        (&rgb_to_rgba(&image_data.pixels), image_width, image_height)
+                    }
+                    gltf::image::Format::R8G8 => {
+                        (&rg_to_rgba(&image_data.pixels), image_width, image_height)
+                    }
+                    gltf::image::Format::R8 => {
+                        (&r_to_rgba(&image_data.pixels), image_width, image_height)
+                    }
+                    _ => panic!("Unsupported texture format: {:?}", image_data.format),
+                }
+            };
 
-                let image = Image::from_bytes(
-                    image_bytes,
-                    image_width,
-                    image_height,
-                    &instance,
-                    &adapter,
-                    device.clone(),
-                    command_pool,
-                    true,
-                    vk::SampleCountFlags::TYPE_1,
-                );
+            let image = Image::from_bytes(
+                image_bytes,
+                image_width,
+                image_height,
+                &instance,
+                &adapter,
+                device.clone(),
+                command_pool,
+                true,
+                vk::SampleCountFlags::TYPE_1,
+            );
 
-                images.push(image);
-            } else {
-                let image = Image::from_bytes(
-                    &[255, 0, 255, 255],
-                    1,
-                    1,
-                    &instance,
-                    &adapter,
-                    device.clone(),
-                    command_pool,
-                    true,
-                    vk::SampleCountFlags::TYPE_1,
-                );
-
-                images.push(image);
-            }
+            images.push(image);
         }
+
+        let placeholder_image = Image::from_bytes(
+            &[255, 0, 255, 255],
+            1,
+            1,
+            &instance,
+            &adapter,
+            device.clone(),
+            command_pool,
+            true,
+            vk::SampleCountFlags::TYPE_1,
+        );
+        images.push(placeholder_image);
+
+        let image_count = images.len();
+        info!("Images: {}", images.len());
 
         let vertex_buffer = Self::create_vertex_buffer(
             &instance,
@@ -381,6 +376,7 @@ impl Renderer {
             command_buffers,
 
             _images: images,
+            image_count,
 
             vertex_buffer,
             index_buffer,
@@ -782,7 +778,7 @@ impl Renderer {
                 .ash_device
                 .cmd_set_scissor(command_buffer, 0, &scissors);
 
-            for (i, primitive_info) in self.primitive_infos.iter().enumerate() {
+            for primitive_info in &self.primitive_infos {
                 self.device.ash_device.cmd_bind_vertex_buffers(
                     command_buffer,
                     0,
@@ -801,7 +797,9 @@ impl Renderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     self.pipeline.layout,
                     0,
-                    &[self.descriptor_sets[i][self.frame_in_flight_index]],
+                    &[self.descriptor_sets
+                        [primitive_info.texture_index.unwrap_or(self.image_count - 1)]
+                        [self.frame_in_flight_index]],
                     &[],
                 );
 
