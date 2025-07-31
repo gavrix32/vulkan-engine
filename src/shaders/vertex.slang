@@ -1,13 +1,17 @@
 struct VSInput {
     float3 in_position;
-    float3 in_color;
+    float3 in_normal;
+    float4 in_tangent;
     float2 in_tex_coord;
 };
 
 struct VSOutput {
     float4 position : SV_Position;
-    float3 frag_color;
-    float2 frag_tex_coord;
+    float3 out_position;
+    float3 out_normal;
+    float3 out_tangent;
+    float out_tangent_sign;
+    float2 out_tex_coord;
 };
 
 struct UniformBuffer {
@@ -15,13 +19,20 @@ struct UniformBuffer {
     float4x4 view;
     float4x4 proj;
 };
-ConstantBuffer<UniformBuffer> uniform_buffer;
+ConstantBuffer<UniformBuffer> ubo;
 
 [shader("vertex")]
 VSOutput main(VSInput input) {
     VSOutput output;
-    output.position = mul(mul(mul(uniform_buffer.proj, uniform_buffer.view), uniform_buffer.model), float4(input.in_position, 1.0));
-    output.frag_color = input.in_color;
-    output.frag_tex_coord = input.in_tex_coord;
+
+    float4x4 MVP = mul(mul(ubo.proj, ubo.view), ubo.model);
+    output.position = mul(MVP, float4(input.in_position, 1.0));
+    output.out_position = mul(ubo.model, float4(input.in_position, 1.0)).xyz;
+
+    output.out_normal = normalize(mul(float3x3(ubo.model), input.in_normal));
+    output.out_tangent = normalize(mul(float3x3(ubo.model), input.in_tangent.xyz));
+    output.out_tangent_sign = input.in_tangent.w;
+    output.out_tex_coord = input.in_tex_coord;
+
     return output;
 }
