@@ -14,15 +14,15 @@ pub struct Pipeline {
 impl Pipeline {
     pub fn new(
         device: Arc<Device>,
+        vertex_shader_bytes: Vec<u8>,
+        fragment_shader_bytes: Vec<u8>,
         render_pass: &RenderPass,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
         msaa_samples: vk::SampleCountFlags,
     ) -> Self {
-        let vertex_shader_bytes = include_bytes!("../shaders/spirv/vertex.spv");
         let vertex_shader_code =
             ash::util::read_spv(&mut Cursor::new(vertex_shader_bytes)).unwrap();
 
-        let fragment_shader_bytes = include_bytes!("../shaders/spirv/fragment.spv");
         let fragment_shader_code =
             ash::util::read_spv(&mut Cursor::new(fragment_shader_bytes)).unwrap();
 

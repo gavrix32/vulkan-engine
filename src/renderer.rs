@@ -1,5 +1,6 @@
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
+use crate::vulkan::descriptor::Descriptor;
 use crate::vulkan::device::Device;
 use crate::vulkan::image::Image;
 use crate::vulkan::instance::Instance;
@@ -9,7 +10,7 @@ use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
 use ash::util::Align;
 use ash::vk;
-use glam::Mat4;
+use glam::{Mat4, Vec3, Vec4};
 use gltf::{Node, buffer};
 use log::{info, warn};
 use mikktspace::Geometry;
@@ -226,10 +227,16 @@ struct UniformBufferData {
     model: Mat4,
     view: Mat4,
     proj: Mat4,
+    light_pos: Vec4,
 }
 
 pub struct Renderer {
     uniform_buffers: Vec<Buffer>,
+    light_uniform_buffers: Vec<Buffer>,
+
+    light_index_buffer: Buffer,
+    light_vertex_buffer: Buffer,
+
     index_buffer: Buffer,
     vertex_buffer: Buffer,
 
@@ -238,10 +245,13 @@ pub struct Renderer {
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
 
-    pipeline: Pipeline,
+    light_pipeline: Pipeline,
+
+    pbr_pipeline: Pipeline,
     descriptor_sets: Vec<Vec<vk::DescriptorSet>>,
-    descriptor_pool: vk::DescriptorPool,
-    descriptor_set_layout: vk::DescriptorSetLayout,
+    light_descriptor_sets: Vec<Vec<vk::DescriptorSet>>,
+    _descriptor: Descriptor,
+    _light_descriptor: Descriptor,
 
     swapchain: Swapchain,
     render_pass: RenderPass,
@@ -264,7 +274,8 @@ pub struct Renderer {
 
     pub camera_view: Mat4,
 
-    primitive_infos: Vec<PrimitiveInfo>,
+    primitives: Vec<PrimitiveInfo>,
+    light_primitives: Vec<PrimitiveInfo>,
 
     timer: Instant,
 }
@@ -295,16 +306,6 @@ impl Renderer {
             render_pass.vk_render_pass,
             width,
             height,
-            msaa_samples,
-        );
-
-        let descriptor_set_layout = Self::create_descriptor_set_layout(&device.ash_device);
-        let descriptor_set_layouts = [descriptor_set_layout];
-
-        let pipeline = Pipeline::new(
-            device.clone(),
-            &render_pass,
-            &descriptor_set_layouts,
             msaa_samples,
         );
 
@@ -420,19 +421,131 @@ impl Renderer {
             &indices,
         );
 
-        let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, device.clone());
+        info!("Importing light model");
+        let (light_document, light_buffers_data, _) =
+            gltf::import_slice(include_bytes!("../models/Box.glb")).expect("Failed to load model");
 
-        let descriptor_pool = Self::create_descriptor_pool(
-            &device.ash_device,
-            (MAX_FRAMES_IN_FLIGHT * primitives.len()) as u32,
+        let mut light_vertices: Vec<Vertex> = Vec::new();
+        let mut light_indices: Vec<u32> = Vec::new();
+
+        let mut light_primitives: Vec<PrimitiveInfo> = Vec::new();
+
+        info!("Parsing light model");
+        for scene in light_document.scenes() {
+            info!("Scene: {}", scene.name().unwrap_or("Unnamed"));
+            for node in scene.nodes() {
+                traverse_node(
+                    node,
+                    &light_buffers_data,
+                    &mut light_vertices,
+                    &mut light_indices,
+                    &mut light_primitives,
+                    Mat4::IDENTITY,
+                );
+            }
+        }
+        info!("Vertices: {}, Indices: {}", light_vertices.len(), light_indices.len());
+
+        let light_vertex_buffer = Self::create_vertex_buffer(
+            &instance,
+            &adapter,
+            device.clone(),
+            device.graphics_queue,
+            command_pool,
+            &light_vertices,
         );
-        let descriptor_sets = Self::create_descriptor_sets(
-            &device.ash_device,
-            descriptor_set_layout,
-            descriptor_pool,
-            &uniform_buffers,
+
+        let light_index_buffer = Self::create_index_buffer(
+            &instance,
+            &adapter,
+            device.clone(),
+            device.graphics_queue,
+            command_pool,
+            &light_indices,
+        );
+
+        let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, device.clone());
+        let light_uniform_buffers =
+            Self::create_uniform_buffers(&instance, &adapter, device.clone());
+
+        let uniform_buffer_layout_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+        let albedo_sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+        let normal_sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(2)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+        let bindings = [
+            uniform_buffer_layout_binding,
+            albedo_sampler_layout_binding,
+            normal_sampler_layout_binding,
+        ];
+
+        let descriptor_count = primitives.len() * MAX_FRAMES_IN_FLIGHT;
+        let light_descriptor_count = light_primitives.len() * MAX_FRAMES_IN_FLIGHT;
+
+        let uniform_buffer_descriptor_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(descriptor_count as u32);
+
+        let sampler_descriptor_pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count((descriptor_count * 2) as u32);
+
+        let descriptor_pool_sizes = [
+            uniform_buffer_descriptor_pool_size,
+            sampler_descriptor_pool_size,
+        ];
+
+        let descriptor = Descriptor::new(
+            device.clone(),
+            &bindings,
+            &descriptor_pool_sizes,
+            descriptor_count,
+        );
+        let light_descriptor = Descriptor::new(
+            device.clone(),
+            &bindings,
+            &descriptor_pool_sizes,
+            light_descriptor_count,
+        );
+
+        let pbr_pipeline = Pipeline::new(
+            device.clone(),
+            Vec::from(include_bytes!("shaders/spirv/vertex.spv")),
+            Vec::from(include_bytes!("shaders/spirv/fragment.spv")),
+            &render_pass,
+            &[descriptor.layout],
+            msaa_samples,
+        );
+
+        let light_pipeline = Pipeline::new(
+            device.clone(),
+            Vec::from(include_bytes!("shaders/spirv/light_vertex.spv")),
+            Vec::from(include_bytes!("shaders/spirv/light_fragment.spv")),
+            &render_pass,
+            &[descriptor.layout],
+            msaa_samples,
+        );
+
+        let descriptor_sets =
+            Self::create_descriptor_sets(&descriptor, &uniform_buffers, &images, &primitives);
+        let light_descriptor_sets = Self::create_descriptor_sets(
+            &light_descriptor,
+            &light_uniform_buffers,
             &images,
-            &primitives,
+            &light_primitives,
         );
 
         let command_buffers = Self::create_command_buffers(&device.ash_device, command_pool);
@@ -448,18 +561,25 @@ impl Renderer {
             surface,
             instance,
 
-            descriptor_set_layout,
-            descriptor_pool,
+            _descriptor: descriptor,
+            _light_descriptor: light_descriptor,
             descriptor_sets,
-            pipeline,
+            light_descriptor_sets,
+            pbr_pipeline,
+            light_pipeline,
 
             command_pool,
             command_buffers,
 
             _images: images,
 
+            light_vertex_buffer,
+            light_index_buffer,
+
             vertex_buffer,
             index_buffer,
+
+            light_uniform_buffers,
             uniform_buffers,
 
             image_available_semaphores,
@@ -474,7 +594,9 @@ impl Renderer {
             height,
 
             camera_view: Mat4::IDENTITY,
-            primitive_infos: primitives,
+
+            primitives,
+            light_primitives,
 
             timer: Instant::now(),
         }
@@ -509,38 +631,6 @@ impl Renderer {
         }
 
         vk::SampleCountFlags::TYPE_1
-    }
-
-    fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
-        let uniform_buffer_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX);
-
-        let albedo_sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(1)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-
-        let normal_sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(2)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-
-        let bindings = [
-            uniform_buffer_layout_binding,
-            albedo_sampler_layout_binding,
-            normal_sampler_layout_binding,
-        ];
-
-        let descriptor_set_layout_create_info =
-            vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-
-        unsafe { device.create_descriptor_set_layout(&descriptor_set_layout_create_info, None) }
-            .expect("Failed to create descriptor set layout")
     }
 
     fn create_command_pool(
@@ -664,50 +754,18 @@ impl Renderer {
         uniform_buffers
     }
 
-    fn create_descriptor_pool(device: &ash::Device, pool_size: u32) -> vk::DescriptorPool {
-        let uniform_buffer_descriptor_pool_size = vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(pool_size);
-
-        let sampler_descriptor_pool_size = vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(pool_size * 2);
-
-        let descriptor_pool_sizes = [
-            uniform_buffer_descriptor_pool_size,
-            sampler_descriptor_pool_size,
-        ];
-
-        let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(&descriptor_pool_sizes)
-            .max_sets(pool_size);
-
-        unsafe { device.create_descriptor_pool(&descriptor_pool_create_info, None) }
-            .expect("Failed to create descriptor pool")
-    }
-
     fn create_descriptor_sets(
-        device: &ash::Device,
-        descriptor_set_layout: vk::DescriptorSetLayout,
-        descriptor_pool: vk::DescriptorPool,
+        descriptor: &Descriptor,
         uniform_buffers: &Vec<Buffer>,
         images: &[Image],
-        primitive_infos: &[PrimitiveInfo],
+        primitives: &[PrimitiveInfo],
     ) -> Vec<Vec<vk::DescriptorSet>> {
-        let descriptor_set_layouts =
-            vec![descriptor_set_layout; primitive_infos.len() * MAX_FRAMES_IN_FLIGHT];
-
-        let allocate_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(&descriptor_set_layouts);
-
-        let flat_descriptor_sets = unsafe { device.allocate_descriptor_sets(&allocate_info) }
-            .expect("Failed to allocate descriptor sets");
+        let flat_descriptor_sets = &descriptor.sets;
 
         let mut descriptor_sets =
-            vec![vec![vk::DescriptorSet::null(); MAX_FRAMES_IN_FLIGHT]; primitive_infos.len()];
+            vec![vec![vk::DescriptorSet::null(); MAX_FRAMES_IN_FLIGHT]; primitives.len()];
 
-        for (primitive_idx, primitive) in primitive_infos.iter().enumerate() {
+        for (primitive_idx, primitive) in primitives.iter().enumerate() {
             for frame in 0..MAX_FRAMES_IN_FLIGHT {
                 let flat_index = primitive_idx * MAX_FRAMES_IN_FLIGHT + frame;
 
@@ -760,7 +818,7 @@ impl Renderer {
 
                 let descriptor_writes = [write_ubo, write_albedo, write_normal];
 
-                unsafe { device.update_descriptor_sets(&descriptor_writes, &[]) };
+                descriptor.update(&descriptor_writes);
             }
         }
         descriptor_sets
@@ -867,17 +925,16 @@ impl Renderer {
         }
         .expect("Failed to begin recording command buffer");
 
+        let pivot = Vec3::new(5.0, 0.0, 0.0);
+        let light_pos_transform =
+            Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians())
+                * Mat4::from_translation(pivot);
+
         unsafe {
             self.device.ash_device.cmd_begin_render_pass(
                 command_buffer,
                 &render_pass_begin_info,
                 vk::SubpassContents::INLINE,
-            );
-
-            self.device.ash_device.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.vk_pipeline,
             );
 
             self.device
@@ -887,7 +944,14 @@ impl Renderer {
                 .ash_device
                 .cmd_set_scissor(command_buffer, 0, &scissors);
 
-            for (primitive_idx, primitive) in self.primitive_infos.iter().enumerate() {
+            // PBR
+            self.device.ash_device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pbr_pipeline.vk_pipeline,
+            );
+
+            for (primitive_idx, primitive) in self.primitives.iter().enumerate() {
                 self.device.ash_device.cmd_bind_vertex_buffers(
                     command_buffer,
                     0,
@@ -901,14 +965,59 @@ impl Renderer {
                     vk::IndexType::UINT32,
                 );
 
-                self.update_uniform_buffer(primitive.model_matrix);
+                self.update_uniform_buffer(
+                    primitive.model_matrix,
+                    light_pos_transform * Vec4::new(1.0, 1.0, 1.0, 1.0),
+                );
 
                 self.device.ash_device.cmd_bind_descriptor_sets(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
-                    self.pipeline.layout,
+                    self.pbr_pipeline.layout,
                     0,
                     &[self.descriptor_sets[primitive_idx][self.frame_in_flight_index]],
+                    &[],
+                );
+
+                self.device.ash_device.cmd_draw_indexed(
+                    command_buffer,
+                    primitive.index_count,
+                    1,
+                    primitive.first_index,
+                    0,
+                    0,
+                );
+            }
+
+            // Light
+            self.device.ash_device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.light_pipeline.vk_pipeline,
+            );
+
+            for primitive in &self.light_primitives {
+                self.device.ash_device.cmd_bind_vertex_buffers(
+                    command_buffer,
+                    0,
+                    &[self.light_vertex_buffer.vk_buffer],
+                    &[0],
+                );
+                self.device.ash_device.cmd_bind_index_buffer(
+                    command_buffer,
+                    self.light_index_buffer.vk_buffer,
+                    vk::DeviceSize::default(),
+                    vk::IndexType::UINT32,
+                );
+
+                self.update_light_uniform_buffer(primitive.model_matrix, light_pos_transform);
+
+                self.device.ash_device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.light_pipeline.layout,
+                    0,
+                    &[self.light_descriptor_sets[0][self.frame_in_flight_index]],
                     &[],
                 );
 
@@ -929,16 +1038,7 @@ impl Renderer {
             .expect("Failed to end recording command buffer");
     }
 
-    fn update_uniform_buffer(&self, model: Mat4) {
-        // let model =
-        //     Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians());
-        // Mat4::IDENTITY;
-        // let view = Mat4::look_at_rh(
-        //     glam::Vec3::new(0.0, 2.0, 3.0),
-        //     glam::Vec3::ZERO,
-        //     glam::Vec3::Y,
-        // );
-
+    fn update_uniform_buffer(&self, model: Mat4, light_pos: Vec4) {
         let model = model
             * Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 00.0_f32.to_radians());
 
@@ -954,11 +1054,42 @@ impl Renderer {
             model,
             view: self.camera_view,
             proj,
+            light_pos,
         };
 
         let mut uniform_align = unsafe {
             Align::new(
                 self.uniform_buffers[self.frame_in_flight_index]
+                    .p_data
+                    .unwrap(),
+                align_of::<f32>() as vk::DeviceSize,
+                size_of::<UniformBufferData>() as vk::DeviceSize,
+            )
+        };
+        uniform_align.copy_from_slice(&[uniform_buffer_data]);
+    }
+
+    fn update_light_uniform_buffer(&self, model: Mat4, rot_trans: Mat4) {
+        let model = rot_trans * model;
+
+        let mut proj = Mat4::perspective_rh(
+            70.0_f32.to_radians(),
+            self.width as f32 / self.height as f32,
+            0.01,
+            1000.0,
+        );
+        proj.y_axis *= -1.0;
+
+        let uniform_buffer_data = UniformBufferData {
+            model,
+            view: self.camera_view,
+            proj,
+            light_pos: Vec4::ZERO,
+        };
+
+        let mut uniform_align = unsafe {
+            Align::new(
+                self.light_uniform_buffers[self.frame_in_flight_index]
                     .p_data
                     .unwrap(),
                 align_of::<f32>() as vk::DeviceSize,
@@ -1140,14 +1271,6 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             self.device.wait_idle();
-
-            self.device
-                .ash_device
-                .destroy_descriptor_pool(self.descriptor_pool, None);
-
-            self.device
-                .ash_device
-                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
 
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 self.device

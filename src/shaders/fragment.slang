@@ -9,6 +9,7 @@ void main(
     float3 out_tangent,
     float out_tangent_sign,
     float2 out_tex_coord,
+    float4 out_light_pos,
 ) {
     float3 albedo = albedo_texture.Sample(out_tex_coord).rgb;
     float3 normal = normal_texture.Sample(out_tex_coord).rgb;
@@ -23,7 +24,7 @@ void main(
         final_normal = N;
     }
 
-    float3 point = float3(0.0, 30.0, 0.0);
+    float3 point = out_light_pos.xyz;
     float3 light_dir = normalize(point - out_position);
 
     float3 ambient = 0.1;
