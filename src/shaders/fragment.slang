@@ -1,5 +1,6 @@
 [[vk::binding(1, 0)]] Sampler2D albedo_texture;
 [[vk::binding(2, 0)]] Sampler2D normal_texture;
+[[vk::binding(3, 0)]] Sampler2D metallic_roughness_texture;
 
 [shader("fragment")]
 void main(
@@ -13,6 +14,7 @@ void main(
 ) {
     float3 albedo = albedo_texture.Sample(out_tex_coord).rgb;
     float3 normal = normal_texture.Sample(out_tex_coord).rgb;
+    float3 metallic_roughness = metallic_roughness_texture.Sample(out_tex_coord).rgb;
 
     float3 T = out_tangent;
     float3 B = normalize(cross(out_normal, out_tangent) * out_tangent_sign);
@@ -29,5 +31,6 @@ void main(
 
     float3 ambient = 0.1;
     float3 diffuse = max(dot(final_normal, light_dir), 0.0);
-    out_color = float4((ambient + diffuse) * albedo, 1.0);
+    //out_color = float4((ambient + diffuse) * albedo, 1.0);
+    out_color = float4(metallic_roughness, 1.0);
 }

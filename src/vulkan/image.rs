@@ -105,6 +105,8 @@ impl Image {
         command_pool: vk::CommandPool,
         mipmapping: bool,
         msaa_samples: vk::SampleCountFlags,
+        mag_filter: vk::Filter,
+        min_filter: vk::Filter,
     ) -> Self {
         let image = ImageReader::new(buffer)
             .with_guessed_format()
@@ -124,6 +126,8 @@ impl Image {
             command_pool,
             mipmapping,
             msaa_samples,
+            mag_filter,
+            min_filter,
         )
     }
 
@@ -137,6 +141,8 @@ impl Image {
         command_pool: vk::CommandPool,
         mip_mapping: bool,
         msaa_samples: vk::SampleCountFlags,
+        mag_filter: vk::Filter,
+        min_filter: vk::Filter,
     ) -> Self {
         let size = (width * height * 4) as vk::DeviceSize;
         let mip_levels = if mip_mapping {
@@ -259,7 +265,7 @@ impl Image {
             vk::ImageAspectFlags::COLOR,
             mip_levels,
         );
-        let sampler = create_sampler(device.clone(), mip_levels);
+        let sampler = create_sampler(device.clone(), mip_levels, mag_filter, min_filter);
 
         Self {
             device,
@@ -572,10 +578,15 @@ fn create_image_view(
     .expect("Failed to create image view")
 }
 
-fn create_sampler(device: Arc<Device>, mip_levels: u32) -> vk::Sampler {
+fn create_sampler(
+    device: Arc<Device>,
+    mip_levels: u32,
+    mag_filter: vk::Filter,
+    min_filter: vk::Filter,
+) -> vk::Sampler {
     let sampler_create_info = vk::SamplerCreateInfo::default()
-        .mag_filter(vk::Filter::LINEAR)
-        .min_filter(vk::Filter::LINEAR)
+        .mag_filter(mag_filter)
+        .min_filter(min_filter)
         .address_mode_u(vk::SamplerAddressMode::REPEAT)
         .address_mode_v(vk::SamplerAddressMode::REPEAT)
         .address_mode_w(vk::SamplerAddressMode::REPEAT)

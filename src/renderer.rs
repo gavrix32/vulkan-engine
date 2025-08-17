@@ -15,6 +15,7 @@ use gltf::{Node, buffer};
 use log::{info, warn};
 use mikktspace::Geometry;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+use std::io::Cursor;
 use std::mem::offset_of;
 use std::sync::Arc;
 use std::time::Instant;
@@ -115,8 +116,9 @@ impl<'a> Geometry for MeshView<'a> {
 struct PrimitiveInfo {
     first_index: u32,
     index_count: u32,
-    texture_index: Option<usize>,
+    albedo_index: Option<usize>,
     normal_index: Option<usize>,
+    metallic_roughness_index: Option<usize>,
     model_matrix: Mat4,
 }
 
@@ -125,7 +127,7 @@ fn traverse_node(
     buffers: &Vec<buffer::Data>,
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
-    primitive_infos: &mut Vec<PrimitiveInfo>,
+    primitives: &mut Vec<PrimitiveInfo>,
     parent_transform: Mat4,
 ) {
     info!("Node: {}", node.name().unwrap_or("Unnamed"));
@@ -137,13 +139,18 @@ fn traverse_node(
         for primitive in mesh.primitives() {
             let material = primitive.material();
 
-            let texture_index = material
+            let albedo_index = material
                 .pbr_metallic_roughness()
                 .base_color_texture()
                 .map(|info| info.texture().source().index());
 
             let normal_index = material
                 .normal_texture()
+                .map(|info| info.texture().source().index());
+
+            let metallic_roughness_index = material
+                .pbr_metallic_roughness()
+                .metallic_roughness_texture()
                 .map(|info| info.texture().source().index());
 
             let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
@@ -179,23 +186,17 @@ fn traverse_node(
             let primitive_info = PrimitiveInfo {
                 first_index,
                 index_count,
-                texture_index,
+                albedo_index,
                 normal_index,
+                metallic_roughness_index,
                 model_matrix,
             };
-            primitive_infos.push(primitive_info);
+            primitives.push(primitive_info);
         }
     }
 
     for child in node.children() {
-        traverse_node(
-            child,
-            buffers,
-            vertices,
-            indices,
-            primitive_infos,
-            model_matrix,
-        );
+        traverse_node(child, buffers, vertices, indices, primitives, model_matrix);
     }
 }
 
@@ -218,6 +219,28 @@ fn rg_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
         .chunks_exact(2)
         .flat_map(|rgb_pixel| [rgb_pixel[0], rgb_pixel[1], 0, 255])
         .collect()
+}
+
+fn parse_model(
+    document: gltf::Document,
+    buffers: &Vec<buffer::Data>,
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    primitives: &mut Vec<PrimitiveInfo>,
+) {
+    for scene in document.scenes() {
+        info!("Scene: {}", scene.name().unwrap_or("Unnamed"));
+        for node in scene.nodes() {
+            traverse_node(
+                node,
+                &buffers,
+                vertices,
+                indices,
+                primitives,
+                Mat4::IDENTITY,
+            );
+        }
+    }
 }
 
 #[repr(C)]
@@ -323,19 +346,13 @@ impl Renderer {
         let mut primitives: Vec<PrimitiveInfo> = Vec::new();
 
         info!("Parsing model");
-        for scene in document.scenes() {
-            info!("Scene: {}", scene.name().unwrap_or("Unnamed"));
-            for node in scene.nodes() {
-                traverse_node(
-                    node,
-                    &buffers_data,
-                    &mut vertices,
-                    &mut indices,
-                    &mut primitives,
-                    Mat4::IDENTITY,
-                );
-            }
-        }
+        parse_model(
+            document,
+            &buffers_data,
+            &mut vertices,
+            &mut indices,
+            &mut primitives,
+        );
         info!("Vertices: {}, Indices: {}", vertices.len(), indices.len());
 
         info!("Generating tangents");
@@ -383,21 +400,23 @@ impl Renderer {
                 command_pool,
                 true,
                 vk::SampleCountFlags::TYPE_1,
+                vk::Filter::LINEAR,
+                vk::Filter::LINEAR,
             );
 
             images.push(image);
         }
 
-        let placeholder_image = Image::from_bytes(
-            &[255, 0, 255, 255],
-            1,
-            1,
+        let placeholder_image = Image::read(
+            &mut Cursor::new(include_bytes!("../placeholder.png")),
             &instance,
             &adapter,
             device.clone(),
             command_pool,
             true,
             vk::SampleCountFlags::TYPE_1,
+            vk::Filter::NEAREST,
+            vk::Filter::NEAREST,
         );
         images.push(placeholder_image);
 
@@ -431,20 +450,18 @@ impl Renderer {
         let mut light_primitives: Vec<PrimitiveInfo> = Vec::new();
 
         info!("Parsing light model");
-        for scene in light_document.scenes() {
-            info!("Scene: {}", scene.name().unwrap_or("Unnamed"));
-            for node in scene.nodes() {
-                traverse_node(
-                    node,
-                    &light_buffers_data,
-                    &mut light_vertices,
-                    &mut light_indices,
-                    &mut light_primitives,
-                    Mat4::IDENTITY,
-                );
-            }
-        }
-        info!("Vertices: {}, Indices: {}", light_vertices.len(), light_indices.len());
+        parse_model(
+            light_document,
+            &light_buffers_data,
+            &mut light_vertices,
+            &mut light_indices,
+            &mut light_primitives,
+        );
+        info!(
+            "Vertices: {}, Indices: {}",
+            light_vertices.len(),
+            light_indices.len()
+        );
 
         let light_vertex_buffer = Self::create_vertex_buffer(
             &instance,
@@ -468,28 +485,35 @@ impl Renderer {
         let light_uniform_buffers =
             Self::create_uniform_buffers(&instance, &adapter, device.clone());
 
-        let uniform_buffer_layout_binding = vk::DescriptorSetLayoutBinding::default()
+        let uniform_layout_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX);
 
-        let albedo_sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
+        let albedo_layout_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(1)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-        let normal_sampler_layout_binding = vk::DescriptorSetLayoutBinding::default()
+        let normal_layout_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(2)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
+        let metallic_roughness_layout_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(3)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
         let bindings = [
-            uniform_buffer_layout_binding,
-            albedo_sampler_layout_binding,
-            normal_sampler_layout_binding,
+            uniform_layout_binding,
+            albedo_layout_binding,
+            normal_layout_binding,
+            metallic_roughness_layout_binding,
         ];
 
         let descriptor_count = primitives.len() * MAX_FRAMES_IN_FLIGHT;
@@ -501,7 +525,7 @@ impl Renderer {
 
         let sampler_descriptor_pool_size = vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count((descriptor_count * 2) as u32);
+            .descriptor_count((descriptor_count * 3) as u32);
 
         let descriptor_pool_sizes = [
             uniform_buffer_descriptor_pool_size,
@@ -786,7 +810,7 @@ impl Renderer {
                     .descriptor_count(1)
                     .buffer_info(&ubo_infos);
 
-                let albedo = &images[primitive.texture_index.unwrap_or(images.len() - 1)];
+                let albedo = &images[primitive.albedo_index.unwrap_or(images.len() - 1)];
                 let albedo_info = vk::DescriptorImageInfo::default()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image_view(albedo.view)
@@ -816,7 +840,29 @@ impl Renderer {
                     .descriptor_count(1)
                     .image_info(&normal_infos);
 
-                let descriptor_writes = [write_ubo, write_albedo, write_normal];
+                let metallic_roughness = &images[primitive
+                    .metallic_roughness_index
+                    .unwrap_or(images.len() - 1)];
+                let metallic_roughness_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(metallic_roughness.view)
+                    .sampler(metallic_roughness.sampler.unwrap());
+                let metallic_roughness_infos = [metallic_roughness_info];
+
+                let write_metallic_roughness = vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(3)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .image_info(&metallic_roughness_infos);
+
+                let descriptor_writes = [
+                    write_ubo,
+                    write_albedo,
+                    write_normal,
+                    write_metallic_roughness,
+                ];
 
                 descriptor.update(&descriptor_writes);
             }
