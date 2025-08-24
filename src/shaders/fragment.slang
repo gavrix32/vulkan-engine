@@ -67,14 +67,13 @@ void main(
 ) {
     float3 albedo = albedo_texture.Sample(tex_coord).rgb;
 
-    float3 tangent_normal = normal_texture.Sample(tex_coord).rgb * 2.0 - 1.0;
+    float3 tangent_normal = normal_texture.Sample(tex_coord).rgb;
     float3x3 TBN = transpose(float3x3(
         normalize(world_tangent),
         normalize(world_bitangent),
         normalize(world_normal)
     ));
     float3 normal = normalize(mul(TBN, tangent_normal));
-    normal = world_normal;
 
     // placeholder check
     if (all(tangent_normal == float3(1.0, 0.0, 0.0)) ||
@@ -124,16 +123,6 @@ void main(
     float3 Li = light_color * attenuation;
     float3 Le = 0.03 * albedo;
     float3 Lo = Le + saturate(BRDF * Li * NdotL);
-
-    //////
-
-    // float3 point = ubo.light_pos.xyz;
-    // float3 light_dir = normalize(point - frag_pos);
-
-    // float3 ambient = 0.1;
-    // float3 diff = max(dot(normal, light_dir), 0.0);
-    // out_color = float4((ambient + diff) * albedo, 1.0);
-    // out_color = float4(metallic_roughness, 1.0);
 
     out_color = float4(Lo, 1.0);
 }
