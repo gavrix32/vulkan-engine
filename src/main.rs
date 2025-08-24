@@ -64,7 +64,7 @@ fn main() {
         }
 
         if let Some(renderer) = &mut state.renderer {
-            renderer.camera_view = camera.view();
+            renderer.camera = camera;
         }
 
         state.update(&mut event_loop);

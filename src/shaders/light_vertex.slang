@@ -7,7 +7,7 @@ struct VSInput {
 
 struct VSOutput {
     float4 position : SV_Position;
-    float4 out_light_pos;
+    float4 light_pos;
 };
 
 struct UniformBuffer {
@@ -15,6 +15,7 @@ struct UniformBuffer {
     float4x4 view;
     float4x4 proj;
     float4 light_pos;
+    float4 cam_pos;
 };
 ConstantBuffer<UniformBuffer> ubo;
 
@@ -24,7 +25,7 @@ VSOutput main(VSInput input) {
 
     float4x4 MVP = mul(mul(ubo.proj, ubo.view), ubo.model);
     output.position = mul(MVP, float4(input.in_position, 1.0));
-    output.out_light_pos = ubo.light_pos;
+    output.light_pos = ubo.light_pos;
 
     return output;
 }

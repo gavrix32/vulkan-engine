@@ -19,6 +19,7 @@ use std::io::Cursor;
 use std::mem::offset_of;
 use std::sync::Arc;
 use std::time::Instant;
+use crate::camera::Camera;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -251,6 +252,7 @@ struct UniformBufferData {
     view: Mat4,
     proj: Mat4,
     light_pos: Vec4,
+    cam_pos: Vec4,
 }
 
 pub struct Renderer {
@@ -295,7 +297,7 @@ pub struct Renderer {
     pub width: u32,
     pub height: u32,
 
-    pub camera_view: Mat4,
+    pub camera: Camera,
 
     primitives: Vec<PrimitiveInfo>,
     light_primitives: Vec<PrimitiveInfo>,
@@ -489,7 +491,7 @@ impl Renderer {
             .binding(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX);
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
 
         let albedo_layout_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(1)
@@ -617,7 +619,7 @@ impl Renderer {
             width,
             height,
 
-            camera_view: Mat4::IDENTITY,
+            camera: Camera::default(),
 
             primitives,
             light_primitives,
@@ -971,10 +973,8 @@ impl Renderer {
         }
         .expect("Failed to begin recording command buffer");
 
-        let pivot = Vec3::new(5.0, 0.0, 0.0);
         let light_pos_transform =
-            Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 90.0_f32.to_radians())
-                * Mat4::from_translation(pivot);
+            Mat4::from_translation(Vec3::new(self.timer.elapsed().as_secs_f32().sin() * 5.0, 3.0, -0.3));
 
         unsafe {
             self.device.ash_device.cmd_begin_render_pass(
@@ -1013,7 +1013,7 @@ impl Renderer {
 
                 self.update_uniform_buffer(
                     primitive.model_matrix,
-                    light_pos_transform * Vec4::new(1.0, 1.0, 1.0, 1.0),
+                    light_pos_transform * Vec4::new(0.0, 0.0, 0.0, 1.0),
                 );
 
                 self.device.ash_device.cmd_bind_descriptor_sets(
@@ -1096,11 +1096,14 @@ impl Renderer {
         );
         proj.y_axis *= -1.0;
 
+        let pos = self.camera.pos;
+
         let uniform_buffer_data = UniformBufferData {
             model,
-            view: self.camera_view,
+            view: self.camera.view(),
             proj,
             light_pos,
+            cam_pos: Vec4::new(pos.x, pos.y, pos.z, 0.0),
         };
 
         let mut uniform_align = unsafe {
@@ -1116,7 +1119,7 @@ impl Renderer {
     }
 
     fn update_light_uniform_buffer(&self, model: Mat4, rot_trans: Mat4) {
-        let model = rot_trans * model;
+        let model = rot_trans * model * Mat4::from_scale(Vec3::new(0.1, 0.1, 0.1));
 
         let mut proj = Mat4::perspective_rh(
             70.0_f32.to_radians(),
@@ -1126,11 +1129,14 @@ impl Renderer {
         );
         proj.y_axis *= -1.0;
 
+        let pos = self.camera.pos;
+
         let uniform_buffer_data = UniformBufferData {
             model,
-            view: self.camera_view,
+            view: self.camera.view(),
             proj,
             light_pos: Vec4::ZERO,
+            cam_pos: Vec4::new(pos.x, pos.y, pos.z, 0.0),
         };
 
         let mut uniform_align = unsafe {

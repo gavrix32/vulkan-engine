@@ -1,6 +1,6 @@
 use glam::{EulerRot, Mat4, Quat, Vec3};
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub struct Camera {
     pub pos: Vec3,
     pub quat: Quat,
