@@ -1,6 +1,6 @@
-use crate::renderer::Vertex;
 use crate::vulkan::device::Device;
 use crate::vulkan::render_pass::RenderPass;
+use crate::vulkan::vertex::Vertex;
 use ash::vk;
 use std::io::Cursor;
 use std::sync::Arc;

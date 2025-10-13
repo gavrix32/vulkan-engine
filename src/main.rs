@@ -4,6 +4,7 @@ mod input;
 mod renderer;
 mod state;
 mod vulkan;
+mod loader;
 
 use crate::camera::Camera;
 use crate::fps_counter::FpsCounter;

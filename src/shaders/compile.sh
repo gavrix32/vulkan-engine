@@ -11,6 +11,8 @@ if [[ "$SHADER_DIR/vertex.slang" -ot "$OUTPUT_DIR/vertex.spv" && \
     fi
 fi
 
+echo "Compilation shaders..."
+
 slangc "$SHADER_DIR/vertex.slang" -target spirv -profile spirv_1_4 -o "$OUTPUT_DIR/vertex.spv"
 slangc "$SHADER_DIR/fragment.slang" -target spirv -profile spirv_1_4 -o "$OUTPUT_DIR/fragment.spv"
 

@@ -1,3 +1,5 @@
+use crate::camera::Camera;
+use crate::loader;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
 use crate::vulkan::descriptor::Descriptor;
@@ -8,198 +10,17 @@ use crate::vulkan::pipeline::Pipeline;
 use crate::vulkan::render_pass::RenderPass;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
+use crate::vulkan::vertex::Vertex;
 use ash::util::Align;
 use ash::vk;
 use glam::{Mat4, Vec3, Vec4};
-use gltf::{Node, buffer};
 use log::{info, warn};
-use mikktspace::Geometry;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::io::Cursor;
-use std::mem::offset_of;
 use std::sync::Arc;
 use std::time::Instant;
-use crate::camera::Camera;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
-
-#[derive(Copy, Clone)]
-pub(crate) struct Vertex {
-    position: [f32; 3],
-    normal: [f32; 3],
-    tangent: [f32; 4],
-    tex_coord: [f32; 2],
-}
-
-impl Vertex {
-    pub(crate) fn get_binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(size_of::<Vertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)
-    }
-
-    pub(crate) fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
-        [
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(0)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(offset_of!(Vertex, position) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(1)
-                .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(offset_of!(Vertex, normal) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(2)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .offset(offset_of!(Vertex, tangent) as u32),
-            vk::VertexInputAttributeDescription::default()
-                .binding(0)
-                .location(3)
-                .format(vk::Format::R32G32_SFLOAT)
-                .offset(offset_of!(Vertex, tex_coord) as u32),
-        ]
-    }
-}
-
-struct MeshView<'a> {
-    vertices: &'a mut Vec<Vertex>,
-    indices: &'a Vec<u32>,
-}
-
-impl<'a> Geometry for MeshView<'a> {
-    fn num_faces(&self) -> usize {
-        self.indices.len() / 3
-    }
-
-    fn num_vertices_of_face(&self, _: usize) -> usize {
-        3
-    }
-
-    fn position(&self, face: usize, vert: usize) -> [f32; 3] {
-        let idx = self.indices[face * 3 + vert] as usize;
-        self.vertices[idx].position
-    }
-
-    fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
-        let idx = self.indices[face * 3 + vert] as usize;
-        self.vertices[idx].normal
-    }
-
-    fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
-        let idx = self.indices[face * 3 + vert] as usize;
-        self.vertices[idx].tex_coord
-    }
-
-    fn set_tangent(
-        &mut self,
-        tangent: [f32; 3],
-        _bi_tangent: [f32; 3],
-        _f_mag_s: f32,
-        _f_mag_t: f32,
-        bi_tangent_preserves_orientation: bool,
-        face: usize,
-        vert: usize,
-    ) {
-        let sign = if bi_tangent_preserves_orientation {
-            1.0
-        } else {
-            -1.0
-        };
-        let idx = self.indices[face * 3 + vert] as usize;
-        self.vertices[idx].tangent = [tangent[0], tangent[1], tangent[2], sign];
-    }
-}
-
-struct PrimitiveInfo {
-    first_index: u32,
-    index_count: u32,
-    albedo_index: Option<usize>,
-    normal_index: Option<usize>,
-    metallic_roughness_index: Option<usize>,
-    model_matrix: Mat4,
-}
-
-fn traverse_node(
-    node: Node,
-    buffers: &Vec<buffer::Data>,
-    vertices: &mut Vec<Vertex>,
-    indices: &mut Vec<u32>,
-    primitives: &mut Vec<PrimitiveInfo>,
-    parent_transform: Mat4,
-) {
-    info!("Node: {}", node.name().unwrap_or("Unnamed"));
-
-    let local_transform = Mat4::from_cols_array_2d(&node.transform().matrix());
-    let model_matrix = parent_transform * local_transform;
-
-    if let Some(mesh) = node.mesh() {
-        for primitive in mesh.primitives() {
-            let material = primitive.material();
-
-            let albedo_index = material
-                .pbr_metallic_roughness()
-                .base_color_texture()
-                .map(|info| info.texture().source().index());
-
-            let normal_index = material
-                .normal_texture()
-                .map(|info| info.texture().source().index());
-
-            let metallic_roughness_index = material
-                .pbr_metallic_roughness()
-                .metallic_roughness_texture()
-                .map(|info| info.texture().source().index());
-
-            let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
-
-            let tex_coords = reader
-                .read_tex_coords(0)
-                .map(|tc| tc.into_f32().collect())
-                .unwrap_or_else(|| vec![[0.0, 0.0]]);
-
-            let first_index = indices.len() as u32;
-
-            let indices_iter = reader.read_indices().unwrap().into_u32();
-            let index_count = indices_iter.len() as u32;
-
-            for index in indices_iter {
-                indices.push(vertices.len() as u32 + index);
-            }
-
-            for (i, (pos, norm)) in reader
-                .read_positions()
-                .unwrap()
-                .zip(reader.read_normals().unwrap())
-                .enumerate()
-            {
-                vertices.push(Vertex {
-                    position: [pos[0], pos[1], pos[2]],
-                    normal: [norm[0], norm[1], norm[2]],
-                    tangent: [0.0; 4],
-                    tex_coord: tex_coords.get(i).copied().unwrap_or([0.0, 0.0]),
-                });
-            }
-
-            let primitive_info = PrimitiveInfo {
-                first_index,
-                index_count,
-                albedo_index,
-                normal_index,
-                metallic_roughness_index,
-                model_matrix,
-            };
-            primitives.push(primitive_info);
-        }
-    }
-
-    for child in node.children() {
-        traverse_node(child, buffers, vertices, indices, primitives, model_matrix);
-    }
-}
 
 fn rgb_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
     rgb_data
@@ -220,28 +41,6 @@ fn rg_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
         .chunks_exact(2)
         .flat_map(|rgb_pixel| [rgb_pixel[0], rgb_pixel[1], 0, 255])
         .collect()
-}
-
-fn parse_model(
-    document: gltf::Document,
-    buffers: &Vec<buffer::Data>,
-    vertices: &mut Vec<Vertex>,
-    indices: &mut Vec<u32>,
-    primitives: &mut Vec<PrimitiveInfo>,
-) {
-    for scene in document.scenes() {
-        info!("Scene: {}", scene.name().unwrap_or("Unnamed"));
-        for node in scene.nodes() {
-            traverse_node(
-                node,
-                &buffers,
-                vertices,
-                indices,
-                primitives,
-                Mat4::IDENTITY,
-            );
-        }
-    }
 }
 
 #[repr(C)]
@@ -299,8 +98,8 @@ pub struct Renderer {
 
     pub camera: Camera,
 
-    primitives: Vec<PrimitiveInfo>,
-    light_primitives: Vec<PrimitiveInfo>,
+    primitives: Vec<loader::PrimitiveInfo>,
+    light_primitives: Vec<loader::PrimitiveInfo>,
 
     timer: Instant,
 }
@@ -345,10 +144,10 @@ impl Renderer {
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
 
-        let mut primitives: Vec<PrimitiveInfo> = Vec::new();
+        let mut primitives: Vec<loader::PrimitiveInfo> = Vec::new();
 
         info!("Parsing model");
-        parse_model(
+        loader::parse_model(
             document,
             &buffers_data,
             &mut vertices,
@@ -358,7 +157,7 @@ impl Renderer {
         info!("Vertices: {}, Indices: {}", vertices.len(), indices.len());
 
         info!("Generating tangents");
-        let mut mesh_view = MeshView {
+        let mut mesh_view = loader::MeshView {
             vertices: &mut vertices,
             indices: &indices,
         };
@@ -449,10 +248,10 @@ impl Renderer {
         let mut light_vertices: Vec<Vertex> = Vec::new();
         let mut light_indices: Vec<u32> = Vec::new();
 
-        let mut light_primitives: Vec<PrimitiveInfo> = Vec::new();
+        let mut light_primitives: Vec<loader::PrimitiveInfo> = Vec::new();
 
         info!("Parsing light model");
-        parse_model(
+        loader::parse_model(
             light_document,
             &light_buffers_data,
             &mut light_vertices,
@@ -784,7 +583,7 @@ impl Renderer {
         descriptor: &Descriptor,
         uniform_buffers: &Vec<Buffer>,
         images: &[Image],
-        primitives: &[PrimitiveInfo],
+        primitives: &[loader::PrimitiveInfo],
     ) -> Vec<Vec<vk::DescriptorSet>> {
         let flat_descriptor_sets = &descriptor.sets;
 
@@ -973,8 +772,11 @@ impl Renderer {
         }
         .expect("Failed to begin recording command buffer");
 
-        let light_pos_transform =
-            Mat4::from_translation(Vec3::new(self.timer.elapsed().as_secs_f32().sin() * 5.0, 3.0, -0.3));
+        let light_pos_transform = Mat4::from_translation(Vec3::new(
+            self.timer.elapsed().as_secs_f32().sin() * 5.0,
+            3.0,
+            -0.3,
+        ));
 
         unsafe {
             self.device.ash_device.cmd_begin_render_pass(

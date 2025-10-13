@@ -12,9 +12,10 @@ struct UniformBuffer {
 ConstantBuffer<UniformBuffer> ubo;
 
 static const float PI = 3.14159265;
+static const float EPSILON = 0.00001;
 
 // x - fragment position
-// N - Normal
+// N - normal
 // L - light vector
 // V - view vector
 // H - halfway vector
@@ -25,7 +26,7 @@ static const float PI = 3.14159265;
 // kD - diffuse fraction
 // kS - specular fraction
 
-// Approximation of the Fresnel Factor
+// Schlick Fresnel Approximation
 float3 fresnel_schlick(float3 F0, float HdotV) {
     return F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
 }
@@ -38,22 +39,22 @@ float distribution_GGX(float3 N, float NdotH, float alpha) {
     float numerator = alpha2;
     float denominator = PI * pow(NdotH2 * (alpha2 - 1.0) + 1.0, 2.0);
 
-    return numerator / max(denominator, 0.000001);
+    return numerator / max(denominator, EPSILON);
 }
 
-// Smith Model
+// Smith Geometry Shadowing Function (light and view components)
 float geometry_smith(float3 N, float NdotL, float NdotV, float alpha) {
-    return geometry_schlick_beckmann(N, NdotL, alpha) * geometry_schlick_beckmann(N, NdotV, alpha);
+    return geometry_schlick_GGX(N, NdotL, alpha) * geometry_schlick_GGX(N, NdotV, alpha);
 }
 
 // Schlick-Beckmann Geometry Shadowing Function
-float geometry_schlick_beckmann(float3 N, float NdotX, float alpha) {
+float geometry_schlick_GGX(float3 N, float NdotX, float alpha) {
     float k = alpha / 2.0;
 
     float numerator = NdotX;
     float denominator = NdotX * (1.0 - k) + k;
 
-    return numerator / max(denominator, 0.000001);
+    return numerator / max(denominator, EPSILON);
 }
 
 [shader("fragment")]
@@ -109,9 +110,9 @@ void main(
 
     float3 lambert_diffuse = albedo / PI;
 
-    float3 cook_torrance_numerator = D * G * F;
-    float3 cook_torrance_denominator = 4.0 * NdotV * NdotL;
-    float3 cook_torrance_specular = cook_torrance_numerator / max(cook_torrance_denominator, 0.000001);
+    float3 numerator = D * G * F;
+    float3 denominator = 4.0 * NdotV * NdotL;
+    float3 cook_torrance_specular = numerator / max(denominator, EPSILON);
 
     float3 kS = F;
     float3 kD = (1.0 - kS) * (1.0 - metallic);
@@ -122,7 +123,7 @@ void main(
     float attenuation = 1.0 / pow(distance, 2.0);
     float3 Li = light_color * attenuation;
     float3 Le = 0.03 * albedo;
-    float3 Lo = Le + saturate(BRDF * Li * NdotL);
+    float3 Lo = Le + BRDF * Li * NdotL;
 
     out_color = float4(Lo, 1.0);
 }
