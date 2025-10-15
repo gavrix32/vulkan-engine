@@ -1,4 +1,3 @@
-use crate::renderer::QueueFamilyIndices;
 use crate::unsafe_vk_try;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
@@ -73,4 +72,58 @@ fn check_physical_device_extensions_support(
         required_extensions.remove(extension_name_cstr);
     }
     required_extensions.is_empty()
+}
+
+pub struct QueueFamilyIndices {
+    pub graphics_family: Option<u32>,
+    pub present_family: Option<u32>,
+}
+
+impl QueueFamilyIndices {
+    pub(crate) fn find_queue_families(
+        instance: &Instance,
+        physical_device: vk::PhysicalDevice,
+        surface: &Surface,
+    ) -> Self {
+        let mut indices = Self {
+            graphics_family: None,
+            present_family: None,
+        };
+
+        let queue_families = unsafe {
+            instance
+                .ash_instance
+                .get_physical_device_queue_family_properties(physical_device)
+        };
+
+        let mut i = 0;
+        for queue_family in queue_families {
+            if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                indices.graphics_family = Some(i);
+            }
+
+            let present_support = unsafe_vk_try!(
+                surface
+                    .surface_instance
+                    .get_physical_device_surface_support(physical_device, i, surface.surface_khr)
+            );
+            if present_support {
+                indices.present_family = Some(i);
+            }
+
+            if indices.is_complete() {
+                break;
+            }
+            i += 1;
+        }
+
+        Self {
+            graphics_family: indices.graphics_family,
+            present_family: indices.present_family,
+        }
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        self.graphics_family.is_some() && self.present_family.is_some()
+    }
 }

@@ -1,6 +1,6 @@
 use crate::unsafe_vk_try;
 use crate::vulkan::adapter::Adapter;
-use crate::vulkan::command_buffer::CommandBuffer;
+use crate::vulkan::command_encoder::CommandEncoder;
 use crate::vulkan::device::Device;
 use crate::vulkan::instance::Instance;
 use ash::vk;
@@ -64,28 +64,13 @@ impl Buffer {
         &self,
         graphics_queue: vk::Queue,
         dst_buffer: &Self,
-        command_pool: vk::CommandPool,
+        command_encoder: &CommandEncoder,
     ) {
-        let command_buffers =
-            CommandBuffer::begin_single_time_commands(self.device.clone(), command_pool);
-
         let copy_region = vk::BufferCopy::default().size(self.size);
 
-        unsafe {
-            self.device.ash_device.cmd_copy_buffer(
-                command_buffers[0],
-                self.vk_buffer,
-                dst_buffer.vk_buffer,
-                &[copy_region],
-            );
-        }
-
-        CommandBuffer::end_single_time_commands(
-            self.device.clone(),
-            command_pool,
-            command_buffers,
-            graphics_queue,
-        );
+        let encoder = command_encoder.begin_single_time();
+        encoder.cmd_copy_buffer(self.vk_buffer, dst_buffer.vk_buffer, &[copy_region]);
+        encoder.end_single_time(graphics_queue);
     }
 
     pub fn map_memory(&mut self) {

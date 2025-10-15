@@ -1,7 +1,8 @@
 use crate::unsafe_vk_try;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
-use crate::vulkan::command_buffer::CommandBuffer;
+use crate::vulkan::command_encoder;
+use crate::vulkan::command_encoder::CommandEncoder;
 use crate::vulkan::device::Device;
 use crate::vulkan::instance::Instance;
 use ash::util::Align;
@@ -99,7 +100,7 @@ impl Image {
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
-        command_pool: vk::CommandPool,
+        command_encoder: &CommandEncoder,
         mipmapping: bool,
         msaa_samples: vk::SampleCountFlags,
         mag_filter: vk::Filter,
@@ -120,7 +121,7 @@ impl Image {
             instance,
             adapter,
             device,
-            command_pool,
+            command_encoder,
             mipmapping,
             msaa_samples,
             mag_filter,
@@ -135,7 +136,7 @@ impl Image {
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
-        command_pool: vk::CommandPool,
+        command_encoder: &CommandEncoder,
         mip_mapping: bool,
         msaa_samples: vk::SampleCountFlags,
         mag_filter: vk::Filter,
@@ -215,7 +216,7 @@ impl Image {
 
         transition_layout(
             device.clone(),
-            command_pool,
+            command_encoder,
             vk_image,
             layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -227,14 +228,14 @@ impl Image {
             vk_image,
             width,
             height,
-            command_pool,
+            command_encoder,
         );
         if mip_mapping {
             generate_mipmaps(
                 instance,
                 device.clone(),
                 adapter,
-                command_pool,
+                command_encoder,
                 vk_image,
                 format,
                 width,
@@ -244,7 +245,7 @@ impl Image {
         } else {
             transition_layout(
                 device.clone(),
-                command_pool,
+                command_encoder,
                 vk_image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -275,7 +276,7 @@ fn generate_mipmaps(
     instance: &Instance,
     device: Arc<Device>,
     adapter: &Adapter,
-    command_pool: vk::CommandPool,
+    command_encoder: &CommandEncoder,
     vk_image: vk::Image,
     format: vk::Format,
     width: u32,
@@ -305,7 +306,7 @@ fn generate_mipmaps(
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .subresource_range(subresource_range);
 
-    let command_buffers = CommandBuffer::begin_single_time_commands(device.clone(), command_pool);
+    let encoder = command_encoder.begin_single_time();
 
     let mut mip_width = width as i32;
     let mut mip_height = height as i32;
@@ -320,17 +321,14 @@ fn generate_mipmaps(
             .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
             .subresource_range(subresource_range);
 
-        unsafe {
-            device.ash_device.cmd_pipeline_barrier(
-                command_buffers[0],
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier],
-            )
-        };
+        encoder.cmd_pipeline_barrier(
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
 
         let blit = vk::ImageBlit::default()
             .src_offsets([
@@ -364,17 +362,14 @@ fn generate_mipmaps(
                     .layer_count(1),
             );
 
-        unsafe {
-            device.ash_device.cmd_blit_image(
-                command_buffers[0],
-                vk_image,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                vk_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[blit],
-                vk::Filter::LINEAR,
-            )
-        };
+        encoder.cmd_blit_image(
+            vk_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[blit],
+            vk::Filter::LINEAR,
+        );
 
         barrier = barrier
             .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
@@ -382,17 +377,14 @@ fn generate_mipmaps(
             .src_access_mask(vk::AccessFlags::TRANSFER_READ)
             .dst_access_mask(vk::AccessFlags::SHADER_READ);
 
-        unsafe {
-            device.ash_device.cmd_pipeline_barrier(
-                command_buffers[0],
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier],
-            )
-        };
+        encoder.cmd_pipeline_barrier(
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[barrier],
+        );
 
         if mip_width > 1 {
             mip_width /= 2
@@ -411,29 +403,21 @@ fn generate_mipmaps(
         .dst_access_mask(vk::AccessFlags::SHADER_READ)
         .subresource_range(subresource_range);
 
-    unsafe {
-        device.ash_device.cmd_pipeline_barrier(
-            command_buffers[0],
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier],
-        )
-    };
-
-    CommandBuffer::end_single_time_commands(
-        device.clone(),
-        command_pool,
-        command_buffers,
-        device.graphics_queue,
+    encoder.cmd_pipeline_barrier(
+        vk::PipelineStageFlags::TRANSFER,
+        vk::PipelineStageFlags::FRAGMENT_SHADER,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &[barrier],
     );
+
+    encoder.end_single_time(device.graphics_queue);
 }
 
 fn transition_layout(
     device: Arc<Device>,
-    command_pool: vk::CommandPool,
+    command_encoder: &CommandEncoder,
     image: vk::Image,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
@@ -478,26 +462,18 @@ fn transition_layout(
         error!("Unsupported layout transition");
     }
 
-    let command_buffers = CommandBuffer::begin_single_time_commands(device.clone(), command_pool);
+    let encoder = command_encoder.begin_single_time();
 
-    unsafe {
-        device.ash_device.cmd_pipeline_barrier(
-            command_buffers[0],
-            src_stage,
-            dst_stage,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier],
-        )
-    };
-
-    CommandBuffer::end_single_time_commands(
-        device.clone(),
-        command_pool,
-        command_buffers,
-        device.graphics_queue,
+    encoder.cmd_pipeline_barrier(
+        src_stage,
+        dst_stage,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &[barrier],
     );
+
+    encoder.end_single_time(device.graphics_queue);
 }
 
 fn copy_from_buffer(
@@ -506,7 +482,7 @@ fn copy_from_buffer(
     image: vk::Image,
     width: u32,
     height: u32,
-    command_pool: vk::CommandPool,
+    command_encoder: &CommandEncoder,
 ) {
     let region = vk::BufferImageCopy::default()
         .buffer_offset(0)
@@ -525,24 +501,16 @@ fn copy_from_buffer(
             depth: 1,
         });
 
-    let command_buffers = CommandBuffer::begin_single_time_commands(device.clone(), command_pool);
+    let encoder = command_encoder.begin_single_time();
 
-    unsafe {
-        device.ash_device.cmd_copy_buffer_to_image(
-            command_buffers[0],
-            buffer.vk_buffer,
-            image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &[region],
-        )
-    };
-
-    CommandBuffer::end_single_time_commands(
-        device.clone(),
-        command_pool,
-        command_buffers,
-        device.graphics_queue,
+    encoder.cmd_copy_buffer_to_image(
+        buffer.vk_buffer,
+        image,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        &[region],
     );
+
+    encoder.end_single_time(device.graphics_queue);
 }
 
 fn create_image_view(

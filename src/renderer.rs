@@ -1,6 +1,7 @@
 use crate::camera::Camera;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
+use crate::vulkan::command_encoder::CommandEncoder;
 use crate::vulkan::descriptor::Descriptor;
 use crate::vulkan::device::Device;
 use crate::vulkan::image::Image;
@@ -64,8 +65,7 @@ pub struct Renderer {
 
     _images: Vec<Image>,
 
-    command_buffers: Vec<vk::CommandBuffer>,
-    command_pool: vk::CommandPool,
+    encoder: CommandEncoder,
 
     light_pipeline: Pipeline,
 
@@ -86,7 +86,7 @@ pub struct Renderer {
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
-    frame_in_flight_index: usize,
+    frame_in_flight: usize,
 
     msaa_samples: vk::SampleCountFlags,
 
@@ -132,8 +132,7 @@ impl Renderer {
             msaa_samples,
         );
 
-        let command_pool =
-            Self::create_command_pool(&device.ash_device, &adapter.queue_family_indices);
+        let command_encoder = CommandEncoder::new(device.clone(), &adapter, MAX_FRAMES_IN_FLIGHT);
 
         info!("Importing model");
         let (document, buffers_data, images_data) =
@@ -197,7 +196,7 @@ impl Renderer {
                 &instance,
                 &adapter,
                 device.clone(),
-                command_pool,
+                &command_encoder,
                 true,
                 vk::SampleCountFlags::TYPE_1,
                 vk::Filter::LINEAR,
@@ -212,7 +211,7 @@ impl Renderer {
             &instance,
             &adapter,
             device.clone(),
-            command_pool,
+            &command_encoder,
             true,
             vk::SampleCountFlags::TYPE_1,
             vk::Filter::NEAREST,
@@ -227,7 +226,7 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            command_pool,
+            &command_encoder,
             &vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         );
@@ -237,7 +236,7 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            command_pool,
+            &command_encoder,
             &indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
@@ -271,7 +270,7 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            command_pool,
+            &command_encoder,
             &light_vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         );
@@ -281,7 +280,7 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            command_pool,
+            &command_encoder,
             &light_indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
@@ -375,7 +374,7 @@ impl Renderer {
             &light_primitives,
         );
 
-        let command_buffers = Self::create_command_buffers(&device.ash_device, command_pool);
+        // let command_buffers = Self::create_command_buffers(&device.ash_device, command_pool);
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             Self::create_sync_objects(&device.ash_device, swapchain.images.len());
@@ -395,8 +394,7 @@ impl Renderer {
             pbr_pipeline,
             light_pipeline,
 
-            command_pool,
-            command_buffers,
+            encoder: command_encoder,
 
             _images: images,
 
@@ -411,7 +409,7 @@ impl Renderer {
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
-            frame_in_flight_index: 0,
+            frame_in_flight: 0,
 
             msaa_samples,
 
@@ -459,23 +457,12 @@ impl Renderer {
         vk::SampleCountFlags::TYPE_1
     }
 
-    fn create_command_pool(
-        device: &ash::Device,
-        queue_family_indices: &QueueFamilyIndices,
-    ) -> vk::CommandPool {
-        let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(queue_family_indices.graphics_family.unwrap());
-
-        unsafe_vk_try!(device.create_command_pool(&command_pool_create_info, None))
-    }
-
     fn create_buffer<T: Copy>(
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
         graphics_queue: vk::Queue,
-        command_pool: vk::CommandPool,
+        command_encoder: &CommandEncoder,
         data: &[T],
         usage: vk::BufferUsageFlags,
     ) -> Buffer {
@@ -508,7 +495,7 @@ impl Renderer {
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
 
-        staging_buffer.copy(graphics_queue, &vertex_buffer, command_pool);
+        staging_buffer.copy(graphics_queue, &vertex_buffer, command_encoder);
 
         vertex_buffer
     }
@@ -542,6 +529,7 @@ impl Renderer {
         uniform_buffers
     }
 
+    // descriptor.rs
     fn create_descriptor_sets(
         descriptor: &Descriptor,
         uniform_buffers: &Vec<Buffer>,
@@ -553,12 +541,12 @@ impl Renderer {
         let mut descriptor_sets =
             vec![vec![vk::DescriptorSet::null(); MAX_FRAMES_IN_FLIGHT]; primitives.len()];
 
-        for (primitive_idx, primitive) in primitives.iter().enumerate() {
+        for (primitive_index, primitive) in primitives.iter().enumerate() {
             for frame in 0..MAX_FRAMES_IN_FLIGHT {
-                let flat_index = primitive_idx * MAX_FRAMES_IN_FLIGHT + frame;
+                let flat_index = primitive_index * MAX_FRAMES_IN_FLIGHT + frame;
 
                 let descriptor_set = flat_descriptor_sets[flat_index];
-                descriptor_sets[primitive_idx][frame] = descriptor_set;
+                descriptor_sets[primitive_index][frame] = descriptor_set;
 
                 let ubo_info = vk::DescriptorBufferInfo::default()
                     .buffer(uniform_buffers[frame].vk_buffer)
@@ -630,19 +618,6 @@ impl Renderer {
         descriptor_sets
     }
 
-    fn create_command_buffers(
-        device: &ash::Device,
-        command_pool: vk::CommandPool,
-    ) -> Vec<vk::CommandBuffer> {
-        let command_buffers: Vec<vk::CommandBuffer> = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(command_buffers.capacity() as u32);
-
-        unsafe_vk_try!(device.allocate_command_buffers(&command_buffer_allocate_info))
-    }
-
     fn create_sync_objects(
         device: &ash::Device,
         swapchain_image_count: usize,
@@ -678,7 +653,7 @@ impl Renderer {
         )
     }
 
-    fn record_command_buffer(&self, image_index: u32) {
+    fn record_command_buffer(&mut self, image_index: u32) {
         let clear_color = vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [0.0, 0.0, 0.0, 1.0],
@@ -716,120 +691,80 @@ impl Renderer {
         };
         let scissors = [scissor];
 
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
-
-        let cmd = self.command_buffers[self.frame_in_flight_index];
-
-        unsafe_vk_try!(
-            self.device
-                .ash_device
-                .begin_command_buffer(cmd, &command_buffer_begin_info)
-        );
-
         let light_pos_transform = Mat4::from_translation(Vec3::new(
             self.timer.elapsed().as_secs_f32().sin() * 5.0,
             3.0,
             -0.3,
         ));
 
-        unsafe {
-            self.device.ash_device.cmd_begin_render_pass(
-                cmd,
-                &render_pass_begin_info,
-                vk::SubpassContents::INLINE,
+        self.encoder.begin(self.frame_in_flight);
+
+        self.encoder
+            .cmd_begin_render_pass(&render_pass_begin_info, vk::SubpassContents::INLINE);
+
+        self.encoder.cmd_set_viewport(0, &viewports);
+        self.encoder.cmd_set_scissor(0, &scissors);
+
+        // PBR
+        self.encoder.cmd_bind_pipeline(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pbr_pipeline.vk_pipeline,
+        );
+
+        for (primitive_index, primitive) in self.primitives.iter().enumerate() {
+            self.encoder
+                .cmd_bind_vertex_buffers(0, &[self.vertex_buffer.vk_buffer], &[0]);
+            self.encoder.cmd_bind_index_buffer(
+                self.index_buffer.vk_buffer,
+                vk::DeviceSize::default(),
+                vk::IndexType::UINT32,
             );
 
-            self.device.ash_device.cmd_set_viewport(cmd, 0, &viewports);
-            self.device.ash_device.cmd_set_scissor(cmd, 0, &scissors);
+            self.update_uniform_buffer(primitive.model_matrix, light_pos_transform, false);
 
-            // PBR
-            self.device.ash_device.cmd_bind_pipeline(
-                cmd,
+            self.encoder.cmd_bind_descriptor_sets(
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pbr_pipeline.vk_pipeline,
+                self.pbr_pipeline.layout,
+                0,
+                &[self.descriptor_sets[primitive_index][self.frame_in_flight]],
+                &[],
             );
 
-            for (primitive_idx, primitive) in self.primitives.iter().enumerate() {
-                self.device.ash_device.cmd_bind_vertex_buffers(
-                    cmd,
-                    0,
-                    &[self.vertex_buffer.vk_buffer],
-                    &[0],
-                );
-                self.device.ash_device.cmd_bind_index_buffer(
-                    cmd,
-                    self.index_buffer.vk_buffer,
-                    vk::DeviceSize::default(),
-                    vk::IndexType::UINT32,
-                );
+            self.encoder
+                .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+        }
 
-                self.update_uniform_buffer(primitive.model_matrix, light_pos_transform, false);
+        // Light
+        self.encoder.cmd_bind_pipeline(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.light_pipeline.vk_pipeline,
+        );
 
-                self.device.ash_device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.pbr_pipeline.layout,
-                    0,
-                    &[self.descriptor_sets[primitive_idx][self.frame_in_flight_index]],
-                    &[],
-                );
+        for primitive in &self.light_primitives {
+            self.encoder
+                .cmd_bind_vertex_buffers(0, &[self.light_vertex_buffer.vk_buffer], &[0]);
+            self.encoder.cmd_bind_index_buffer(
+                self.light_index_buffer.vk_buffer,
+                vk::DeviceSize::default(),
+                vk::IndexType::UINT32,
+            );
 
-                self.device.ash_device.cmd_draw_indexed(
-                    cmd,
-                    primitive.index_count,
-                    1,
-                    primitive.first_index,
-                    0,
-                    0,
-                );
-            }
+            self.update_uniform_buffer(primitive.model_matrix, light_pos_transform, true);
 
-            // Light
-            self.device.ash_device.cmd_bind_pipeline(
-                cmd,
+            self.encoder.cmd_bind_descriptor_sets(
                 vk::PipelineBindPoint::GRAPHICS,
-                self.light_pipeline.vk_pipeline,
+                self.light_pipeline.layout,
+                0,
+                &[self.light_descriptor_sets[0][self.frame_in_flight]],
+                &[],
             );
 
-            for primitive in &self.light_primitives {
-                self.device.ash_device.cmd_bind_vertex_buffers(
-                    cmd,
-                    0,
-                    &[self.light_vertex_buffer.vk_buffer],
-                    &[0],
-                );
-                self.device.ash_device.cmd_bind_index_buffer(
-                    cmd,
-                    self.light_index_buffer.vk_buffer,
-                    vk::DeviceSize::default(),
-                    vk::IndexType::UINT32,
-                );
+            self.encoder
+                .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+        }
 
-                self.update_uniform_buffer(primitive.model_matrix, light_pos_transform, true);
-
-                self.device.ash_device.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.light_pipeline.layout,
-                    0,
-                    &[self.light_descriptor_sets[0][self.frame_in_flight_index]],
-                    &[],
-                );
-
-                self.device.ash_device.cmd_draw_indexed(
-                    cmd,
-                    primitive.index_count,
-                    1,
-                    primitive.first_index,
-                    0,
-                    0,
-                );
-            }
-
-            self.device.ash_device.cmd_end_render_pass(cmd);
-        };
-
-        unsafe_vk_try!(self.device.ash_device.end_command_buffer(cmd));
+        self.encoder.cmd_end_render_pass();
+        self.encoder.end();
     }
 
     fn update_uniform_buffer(&self, model: Mat4, light_pos_transform: Mat4, is_light: bool) {
@@ -859,9 +794,9 @@ impl Renderer {
         };
 
         let uniform_buffer = if is_light {
-            &self.uniform_buffers[1][self.frame_in_flight_index]
+            &self.uniform_buffers[1][self.frame_in_flight]
         } else {
-            &self.uniform_buffers[0][self.frame_in_flight_index]
+            &self.uniform_buffers[0][self.frame_in_flight]
         };
 
         let mut uniform_align = unsafe {
@@ -876,7 +811,7 @@ impl Renderer {
 
     pub fn draw_frame(&mut self) {
         unsafe_vk_try!(self.device.ash_device.wait_for_fences(
-            &[self.in_flight_fences[self.frame_in_flight_index]],
+            &[self.in_flight_fences[self.frame_in_flight]],
             true,
             u64::MAX,
         ));
@@ -885,7 +820,7 @@ impl Renderer {
 
         match self
             .swapchain
-            .acquire_next_image(self.image_available_semaphores[self.frame_in_flight_index])
+            .acquire_next_image(self.image_available_semaphores[self.frame_in_flight])
         {
             None => {
                 warn!("Recreating swapchain...");
@@ -898,19 +833,19 @@ impl Renderer {
         unsafe_vk_try!(
             self.device
                 .ash_device
-                .reset_fences(&[self.in_flight_fences[self.frame_in_flight_index]])
+                .reset_fences(&[self.in_flight_fences[self.frame_in_flight]])
         );
 
         unsafe_vk_try!(self.device.ash_device.reset_command_buffer(
-            self.command_buffers[self.frame_in_flight_index],
+            self.encoder.command_buffers[self.frame_in_flight],
             vk::CommandBufferResetFlags::empty(),
         ));
 
         self.record_command_buffer(image_index);
 
-        let wait_semaphores = [self.image_available_semaphores[self.frame_in_flight_index]];
+        let wait_semaphores = [self.image_available_semaphores[self.frame_in_flight]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let command_buffers = [self.command_buffers[self.frame_in_flight_index]];
+        let command_buffers = [self.encoder.command_buffers[self.frame_in_flight]];
         let signal_semaphores = [self.render_finished_semaphores[image_index as usize]];
 
         let submit_info = vk::SubmitInfo::default()
@@ -923,7 +858,7 @@ impl Renderer {
         unsafe_vk_try!(self.device.ash_device.queue_submit(
             self.device.graphics_queue,
             &submit_infos,
-            self.in_flight_fences[self.frame_in_flight_index],
+            self.in_flight_fences[self.frame_in_flight],
         ));
 
         let swapchains = [self.swapchain.swapchain_khr];
@@ -961,7 +896,7 @@ impl Renderer {
             self.recreate_swapchain();
         }
 
-        self.frame_in_flight_index = (self.frame_in_flight_index + 1) % MAX_FRAMES_IN_FLIGHT;
+        self.frame_in_flight = (self.frame_in_flight + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     fn recreate_swapchain(&mut self) {
@@ -974,60 +909,6 @@ impl Renderer {
             self.height,
             self.msaa_samples,
         );
-    }
-}
-
-pub struct QueueFamilyIndices {
-    pub graphics_family: Option<u32>,
-    pub present_family: Option<u32>,
-}
-
-impl QueueFamilyIndices {
-    pub(crate) fn find_queue_families(
-        instance: &Instance,
-        physical_device: vk::PhysicalDevice,
-        surface: &Surface,
-    ) -> Self {
-        let mut indices = Self {
-            graphics_family: None,
-            present_family: None,
-        };
-
-        let queue_families = unsafe {
-            instance
-                .ash_instance
-                .get_physical_device_queue_family_properties(physical_device)
-        };
-
-        let mut i = 0;
-        for queue_family in queue_families {
-            if queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
-                indices.graphics_family = Some(i);
-            }
-
-            let present_support = unsafe_vk_try!(
-                surface
-                    .surface_instance
-                    .get_physical_device_surface_support(physical_device, i, surface.surface_khr)
-            );
-            if present_support {
-                indices.present_family = Some(i);
-            }
-
-            if indices.is_complete() {
-                break;
-            }
-            i += 1;
-        }
-
-        Self {
-            graphics_family: indices.graphics_family,
-            present_family: indices.present_family,
-        }
-    }
-
-    pub(crate) fn is_complete(&self) -> bool {
-        self.graphics_family.is_some() && self.present_family.is_some()
     }
 }
 
@@ -1054,7 +935,7 @@ impl Drop for Renderer {
 
             self.device
                 .ash_device
-                .destroy_command_pool(self.command_pool, None);
+                .destroy_command_pool(self.encoder.command_pool, None);
         }
     }
 }
