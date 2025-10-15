@@ -44,7 +44,6 @@ fn rg_to_rgba(rgb_data: &[u8]) -> Vec<u8> {
 }
 
 #[repr(C)]
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 struct UniformBufferData {
     model: Mat4,
@@ -55,8 +54,7 @@ struct UniformBufferData {
 }
 
 pub struct Renderer {
-    uniform_buffers: Vec<Buffer>,
-    light_uniform_buffers: Vec<Buffer>,
+    uniform_buffers: Vec<Vec<Buffer>>,
 
     light_index_buffer: Buffer,
     light_vertex_buffer: Buffer,
@@ -224,22 +222,24 @@ impl Renderer {
 
         info!("Textures: {}, Size: {} MB", images.len(), size_mb);
 
-        let vertex_buffer = Self::create_vertex_buffer(
+        let vertex_buffer = Self::create_buffer(
             &instance,
             &adapter,
             device.clone(),
             device.graphics_queue,
             command_pool,
             &vertices,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
         );
 
-        let index_buffer = Self::create_index_buffer(
+        let index_buffer = Self::create_buffer(
             &instance,
             &adapter,
             device.clone(),
             device.graphics_queue,
             command_pool,
             &indices,
+            vk::BufferUsageFlags::INDEX_BUFFER,
         );
 
         info!("Importing light model");
@@ -266,27 +266,27 @@ impl Renderer {
             light_indices.len()
         );
 
-        let light_vertex_buffer = Self::create_vertex_buffer(
+        let light_vertex_buffer = Self::create_buffer(
             &instance,
             &adapter,
             device.clone(),
             device.graphics_queue,
             command_pool,
             &light_vertices,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
         );
 
-        let light_index_buffer = Self::create_index_buffer(
+        let light_index_buffer = Self::create_buffer(
             &instance,
             &adapter,
             device.clone(),
             device.graphics_queue,
             command_pool,
             &light_indices,
+            vk::BufferUsageFlags::INDEX_BUFFER,
         );
 
         let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, device.clone());
-        let light_uniform_buffers =
-            Self::create_uniform_buffers(&instance, &adapter, device.clone());
 
         let uniform_layout_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
@@ -367,10 +367,10 @@ impl Renderer {
         );
 
         let descriptor_sets =
-            Self::create_descriptor_sets(&descriptor, &uniform_buffers, &images, &primitives);
+            Self::create_descriptor_sets(&descriptor, &uniform_buffers[0], &images, &primitives);
         let light_descriptor_sets = Self::create_descriptor_sets(
             &light_descriptor,
-            &light_uniform_buffers,
+            &uniform_buffers[1],
             &images,
             &light_primitives,
         );
@@ -406,7 +406,6 @@ impl Renderer {
             vertex_buffer,
             index_buffer,
 
-            light_uniform_buffers,
             uniform_buffers,
 
             image_available_semaphores,
@@ -471,15 +470,16 @@ impl Renderer {
         unsafe_vk_try!(device.create_command_pool(&command_pool_create_info, None))
     }
 
-    fn create_vertex_buffer(
+    fn create_buffer<T: Copy>(
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
         graphics_queue: vk::Queue,
         command_pool: vk::CommandPool,
-        vertices: &Vec<Vertex>,
+        data: &[T],
+        usage: vk::BufferUsageFlags,
     ) -> Buffer {
-        let size = (size_of::<Vertex>() * vertices.len()) as vk::DeviceSize;
+        let size = (size_of::<T>() * data.len()) as vk::DeviceSize;
 
         let mut staging_buffer = Buffer::new(
             instance,
@@ -494,8 +494,8 @@ impl Renderer {
         let data_ptr = staging_buffer.p_data.unwrap();
 
         let mut vertex_align =
-            unsafe { Align::new(data_ptr, align_of::<Vertex>() as vk::DeviceSize, size) };
-        vertex_align.copy_from_slice(&vertices);
+            unsafe { Align::new(data_ptr, align_of::<T>() as vk::DeviceSize, size) };
+        vertex_align.copy_from_slice(&data);
 
         staging_buffer.unmap_memory();
 
@@ -504,7 +504,7 @@ impl Renderer {
             adapter,
             device.clone(),
             size,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::BufferUsageFlags::TRANSFER_DST | usage,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
 
@@ -513,67 +513,29 @@ impl Renderer {
         vertex_buffer
     }
 
-    fn create_index_buffer(
-        instance: &Instance,
-        adapter: &Adapter,
-        device: Arc<Device>,
-        graphics_queue: vk::Queue,
-        command_pool: vk::CommandPool,
-        indices: &Vec<u32>,
-    ) -> Buffer {
-        let buffer_size = (size_of::<u32>() * indices.len()) as vk::DeviceSize;
-
-        let mut staging_buffer = Buffer::new(
-            instance,
-            adapter,
-            device.clone(),
-            buffer_size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        );
-
-        staging_buffer.map_memory();
-        let data_ptr = staging_buffer.p_data.unwrap();
-
-        let mut vertex_align =
-            unsafe { Align::new(data_ptr, align_of::<u32>() as vk::DeviceSize, buffer_size) };
-        vertex_align.copy_from_slice(&indices);
-
-        staging_buffer.unmap_memory();
-
-        let index_buffer = Buffer::new(
-            instance,
-            adapter,
-            device.clone(),
-            buffer_size,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        );
-
-        staging_buffer.copy(graphics_queue, &index_buffer, command_pool);
-
-        index_buffer
-    }
-
     fn create_uniform_buffers(
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
-    ) -> Vec<Buffer> {
+    ) -> Vec<Vec<Buffer>> {
         let buffer_size = size_of::<UniformBufferData>() as vk::DeviceSize;
 
-        let mut uniform_buffers: Vec<Buffer> = Vec::new();
+        let mut uniform_buffers: Vec<Vec<Buffer>> = Vec::new();
 
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            let mut uniform_buffer = Buffer::new(
-                instance,
-                adapter,
-                device.clone(),
-                buffer_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            );
-            uniform_buffer.map_memory();
+        for _ in 0..2 {
+            let mut uniform_buffer: Vec<Buffer> = Vec::new();
+            for _ in 0..MAX_FRAMES_IN_FLIGHT {
+                let mut buffer = Buffer::new(
+                    instance,
+                    adapter,
+                    device.clone(),
+                    buffer_size,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                );
+                buffer.map_memory();
+                uniform_buffer.push(buffer);
+            }
             uniform_buffers.push(uniform_buffer);
         }
 
@@ -699,7 +661,9 @@ impl Renderer {
             image_available_semaphores.push(unsafe_vk_try!(
                 device.create_semaphore(&semaphore_create_info, None)
             ));
-            in_flight_fences.push(unsafe_vk_try!(device.create_fence(&fence_create_info, None)));
+            in_flight_fences.push(unsafe_vk_try!(
+                device.create_fence(&fence_create_info, None)
+            ));
         }
         for _ in 0..swapchain_image_count {
             render_finished_semaphores.push(unsafe_vk_try!(
@@ -754,12 +718,12 @@ impl Renderer {
 
         let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
 
-        let command_buffer = self.command_buffers[self.frame_in_flight_index];
+        let cmd = self.command_buffers[self.frame_in_flight_index];
 
         unsafe_vk_try!(
             self.device
                 .ash_device
-                .begin_command_buffer(command_buffer, &command_buffer_begin_info)
+                .begin_command_buffer(cmd, &command_buffer_begin_info)
         );
 
         let light_pos_transform = Mat4::from_translation(Vec3::new(
@@ -770,46 +734,39 @@ impl Renderer {
 
         unsafe {
             self.device.ash_device.cmd_begin_render_pass(
-                command_buffer,
+                cmd,
                 &render_pass_begin_info,
                 vk::SubpassContents::INLINE,
             );
 
-            self.device
-                .ash_device
-                .cmd_set_viewport(command_buffer, 0, &viewports);
-            self.device
-                .ash_device
-                .cmd_set_scissor(command_buffer, 0, &scissors);
+            self.device.ash_device.cmd_set_viewport(cmd, 0, &viewports);
+            self.device.ash_device.cmd_set_scissor(cmd, 0, &scissors);
 
             // PBR
             self.device.ash_device.cmd_bind_pipeline(
-                command_buffer,
+                cmd,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pbr_pipeline.vk_pipeline,
             );
 
             for (primitive_idx, primitive) in self.primitives.iter().enumerate() {
                 self.device.ash_device.cmd_bind_vertex_buffers(
-                    command_buffer,
+                    cmd,
                     0,
                     &[self.vertex_buffer.vk_buffer],
                     &[0],
                 );
                 self.device.ash_device.cmd_bind_index_buffer(
-                    command_buffer,
+                    cmd,
                     self.index_buffer.vk_buffer,
                     vk::DeviceSize::default(),
                     vk::IndexType::UINT32,
                 );
 
-                self.update_uniform_buffer(
-                    primitive.model_matrix,
-                    light_pos_transform * Vec4::new(0.0, 0.0, 0.0, 1.0),
-                );
+                self.update_uniform_buffer(primitive.model_matrix, light_pos_transform, false);
 
                 self.device.ash_device.cmd_bind_descriptor_sets(
-                    command_buffer,
+                    cmd,
                     vk::PipelineBindPoint::GRAPHICS,
                     self.pbr_pipeline.layout,
                     0,
@@ -818,7 +775,7 @@ impl Renderer {
                 );
 
                 self.device.ash_device.cmd_draw_indexed(
-                    command_buffer,
+                    cmd,
                     primitive.index_count,
                     1,
                     primitive.first_index,
@@ -829,29 +786,29 @@ impl Renderer {
 
             // Light
             self.device.ash_device.cmd_bind_pipeline(
-                command_buffer,
+                cmd,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.light_pipeline.vk_pipeline,
             );
 
             for primitive in &self.light_primitives {
                 self.device.ash_device.cmd_bind_vertex_buffers(
-                    command_buffer,
+                    cmd,
                     0,
                     &[self.light_vertex_buffer.vk_buffer],
                     &[0],
                 );
                 self.device.ash_device.cmd_bind_index_buffer(
-                    command_buffer,
+                    cmd,
                     self.light_index_buffer.vk_buffer,
                     vk::DeviceSize::default(),
                     vk::IndexType::UINT32,
                 );
 
-                self.update_light_uniform_buffer(primitive.model_matrix, light_pos_transform);
+                self.update_uniform_buffer(primitive.model_matrix, light_pos_transform, true);
 
                 self.device.ash_device.cmd_bind_descriptor_sets(
-                    command_buffer,
+                    cmd,
                     vk::PipelineBindPoint::GRAPHICS,
                     self.light_pipeline.layout,
                     0,
@@ -860,7 +817,7 @@ impl Renderer {
                 );
 
                 self.device.ash_device.cmd_draw_indexed(
-                    command_buffer,
+                    cmd,
                     primitive.index_count,
                     1,
                     primitive.first_index,
@@ -869,15 +826,19 @@ impl Renderer {
                 );
             }
 
-            self.device.ash_device.cmd_end_render_pass(command_buffer);
+            self.device.ash_device.cmd_end_render_pass(cmd);
         };
 
-        unsafe_vk_try!(self.device.ash_device.end_command_buffer(command_buffer));
+        unsafe_vk_try!(self.device.ash_device.end_command_buffer(cmd));
     }
 
-    fn update_uniform_buffer(&self, model: Mat4, light_pos: Vec4) {
-        let model = model
-            * Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 00.0_f32.to_radians());
+    fn update_uniform_buffer(&self, model: Mat4, light_pos_transform: Mat4, is_light: bool) {
+        let model = if is_light {
+            light_pos_transform * model * Mat4::from_scale(Vec3::new(0.1, 0.1, 0.1))
+        } else {
+            model
+            // * Mat4::from_rotation_y(self.timer.elapsed().as_secs_f32() * 00.0_f32.to_radians())
+        };
 
         let mut proj = Mat4::perspective_rh(
             70.0_f32.to_radians(),
@@ -893,48 +854,19 @@ impl Renderer {
             model,
             view: self.camera.view(),
             proj,
-            light_pos,
+            light_pos: light_pos_transform * Vec4::new(0.0, 0.0, 0.0, 1.0),
             cam_pos: Vec4::new(pos.x, pos.y, pos.z, 0.0),
+        };
+
+        let uniform_buffer = if is_light {
+            &self.uniform_buffers[1][self.frame_in_flight_index]
+        } else {
+            &self.uniform_buffers[0][self.frame_in_flight_index]
         };
 
         let mut uniform_align = unsafe {
             Align::new(
-                self.uniform_buffers[self.frame_in_flight_index]
-                    .p_data
-                    .unwrap(),
-                align_of::<f32>() as vk::DeviceSize,
-                size_of::<UniformBufferData>() as vk::DeviceSize,
-            )
-        };
-        uniform_align.copy_from_slice(&[uniform_buffer_data]);
-    }
-
-    fn update_light_uniform_buffer(&self, model: Mat4, rot_trans: Mat4) {
-        let model = rot_trans * model * Mat4::from_scale(Vec3::new(0.1, 0.1, 0.1));
-
-        let mut proj = Mat4::perspective_rh(
-            70.0_f32.to_radians(),
-            self.width as f32 / self.height as f32,
-            0.01,
-            1000.0,
-        );
-        proj.y_axis *= -1.0;
-
-        let pos = self.camera.pos;
-
-        let uniform_buffer_data = UniformBufferData {
-            model,
-            view: self.camera.view(),
-            proj,
-            light_pos: Vec4::ZERO,
-            cam_pos: Vec4::new(pos.x, pos.y, pos.z, 0.0),
-        };
-
-        let mut uniform_align = unsafe {
-            Align::new(
-                self.light_uniform_buffers[self.frame_in_flight_index]
-                    .p_data
-                    .unwrap(),
+                uniform_buffer.p_data.unwrap(),
                 align_of::<f32>() as vk::DeviceSize,
                 size_of::<UniformBufferData>() as vk::DeviceSize,
             )
