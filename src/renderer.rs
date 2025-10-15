@@ -110,8 +110,9 @@ impl Renderer {
         height: u32,
         display_handle: RawDisplayHandle,
         window_handle: RawWindowHandle,
+        validation: bool,
     ) -> Self {
-        let instance = Instance::new(display_handle);
+        let instance = Instance::new(display_handle, validation);
         let surface = Surface::new(&instance, display_handle, window_handle);
         let adapter = Adapter::new(&instance, &surface);
         let device = Arc::new(Device::new(&instance, &adapter));
@@ -138,7 +139,7 @@ impl Renderer {
 
         info!("Importing model");
         let (document, buffers_data, images_data) =
-            gltf::import_slice(include_bytes!("../models/sponza.glb"))
+            gltf::import_slice(include_bytes!("../resources/models/sponza.glb"))
                 .expect("Failed to load model");
 
         let mut vertices: Vec<Vertex> = Vec::new();
@@ -208,8 +209,8 @@ impl Renderer {
             images.push(image);
         }
 
-        let placeholder_image = Image::read(
-            &mut Cursor::new(include_bytes!("../placeholder.png")),
+        let placeholder_image = Image::read_rgba8(
+            &mut Cursor::new(include_bytes!("../resources/textures/placeholder.png")),
             &instance,
             &adapter,
             device.clone(),
@@ -243,7 +244,8 @@ impl Renderer {
 
         info!("Importing light model");
         let (light_document, light_buffers_data, _) =
-            gltf::import_slice(include_bytes!("../models/Box.glb")).expect("Failed to load model");
+            gltf::import_slice(include_bytes!("../resources/models/Box.glb"))
+                .expect("Failed to load model");
 
         let mut light_vertices: Vec<Vertex> = Vec::new();
         let mut light_indices: Vec<u32> = Vec::new();
@@ -602,7 +604,6 @@ impl Renderer {
                     .offset(0)
                     .range(vk::WHOLE_SIZE);
                 let ubo_infos = [ubo_info];
-
                 let write_ubo = vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_set)
                     .dst_binding(0)
@@ -617,7 +618,6 @@ impl Renderer {
                     .image_view(albedo.view)
                     .sampler(albedo.sampler.unwrap());
                 let albedo_infos = [albedo_info];
-
                 let write_albedo = vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_set)
                     .dst_binding(1)
@@ -632,7 +632,6 @@ impl Renderer {
                     .image_view(normal.view)
                     .sampler(normal.sampler.unwrap());
                 let normal_infos = [normal_info];
-
                 let write_normal = vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_set)
                     .dst_binding(2)
@@ -649,7 +648,6 @@ impl Renderer {
                     .image_view(metallic_roughness.view)
                     .sampler(metallic_roughness.sampler.unwrap());
                 let metallic_roughness_infos = [metallic_roughness_info];
-
                 let write_metallic_roughness = vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_set)
                     .dst_binding(3)

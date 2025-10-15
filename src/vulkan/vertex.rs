@@ -1,5 +1,5 @@
-use std::mem::offset_of;
 use ash::vk;
+use std::mem::offset_of;
 
 #[derive(Copy, Clone)]
 pub(crate) struct Vertex {

@@ -54,11 +54,24 @@ impl ApplicationHandler for State {
             .with_inner_size(PhysicalSize::new(self.width, self.height));
 
         let window = event_loop.create_window(window_attribs).unwrap();
+
+        let args: Vec<String> = std::env::args().collect();
+
+        if args.iter().any(|a| a == "-h" || a == "--help") {
+            println!("Usage: vulkan-engine [OPTIONS]");
+            println!("    -h --help          display this help and exit");
+            println!("    -v --validation    use vulkan validation layers");
+            std::process::exit(0);
+        }
+
+        let validation = args.iter().any(|a| a == "-v" || a == "--validation");
+
         let renderer = Renderer::new(
             self.width,
             self.height,
             window.display_handle().unwrap().as_raw(),
             window.window_handle().unwrap().as_raw(),
+            validation,
         );
 
         self.window = Some(window);

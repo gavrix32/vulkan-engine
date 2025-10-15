@@ -96,8 +96,7 @@ impl Image {
         }
     }
 
-    #[allow(unused)]
-    pub fn read<R: io::Seek + io::BufRead>(
+    pub fn read_rgba8<R: io::Seek + io::BufRead>(
         buffer: &mut R,
         instance: &Instance,
         adapter: &Adapter,

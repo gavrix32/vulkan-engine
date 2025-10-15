@@ -3,17 +3,17 @@ use ash::vk;
 use std::ffi::{CStr, CString, c_char, c_void};
 
 pub const VALIDATION_LAYERS: [&str; 1] = ["VK_LAYER_KHRONOS_validation"];
-pub const ENABLE_VALIDATION_LAYERS: bool = cfg!(debug_assertions);
 
 pub fn setup_debug_messenger(
     entry: &ash::Entry,
     instance: &ash::Instance,
     create_info: &vk::DebugUtilsMessengerCreateInfoEXT,
+    validation: bool,
 ) -> (
     Option<ext::debug_utils::Instance>,
     Option<vk::DebugUtilsMessengerEXT>,
 ) {
-    if !ENABLE_VALIDATION_LAYERS {
+    if !validation {
         return (None, None);
     }
 

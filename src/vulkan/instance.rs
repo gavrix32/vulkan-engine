@@ -12,7 +12,7 @@ pub struct Instance {
 }
 
 impl Instance {
-    pub fn new(display_handle: RawDisplayHandle) -> Self {
+    pub fn new(display_handle: RawDisplayHandle, validation: bool) -> Self {
         let entry = unsafe { ash::Entry::load() }.expect("Failed to load Vulkan library");
 
         let mut debug_utils_messenger_create_info = debug::create_debug_messenger_create_info();
@@ -24,7 +24,7 @@ impl Instance {
             .engine_version(0)
             .api_version(vk::API_VERSION_1_3);
 
-        let required_extensions = get_required_extensions(display_handle);
+        let required_extensions = get_required_extensions(display_handle, validation);
 
         let mut debug_instance_create_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
@@ -32,7 +32,7 @@ impl Instance {
 
         let layer_cstring_pointers = debug::get_validation_layer_cstring_pointers();
 
-        if debug::ENABLE_VALIDATION_LAYERS {
+        if validation {
             if !check_validation_layer_support(&entry) {
                 panic!("validation layers requested, but not available!");
             }
@@ -44,8 +44,12 @@ impl Instance {
         let ash_instance = unsafe { entry.create_instance(&debug_instance_create_info, None) }
             .expect("Failed to create vulkan instance");
 
-        let (debug_instance, debug_messenger) =
-            debug::setup_debug_messenger(&entry, &ash_instance, &debug_utils_messenger_create_info);
+        let (debug_instance, debug_messenger) = debug::setup_debug_messenger(
+            &entry,
+            &ash_instance,
+            &debug_utils_messenger_create_info,
+            validation,
+        );
 
         Self {
             entry,
@@ -56,12 +60,15 @@ impl Instance {
     }
 }
 
-fn get_required_extensions(display_handle: RawDisplayHandle) -> Vec<*const c_char> {
+fn get_required_extensions(
+    display_handle: RawDisplayHandle,
+    validation: bool,
+) -> Vec<*const c_char> {
     let mut extensions = ash_window::enumerate_required_extensions(display_handle)
         .unwrap()
         .to_vec();
 
-    if debug::ENABLE_VALIDATION_LAYERS {
+    if validation {
         extensions.push(ext::debug_utils::NAME.as_ptr());
     }
     extensions
