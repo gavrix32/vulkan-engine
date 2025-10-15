@@ -1,3 +1,4 @@
+use crate::unsafe_vk_try;
 use crate::vulkan::instance::Instance;
 use ash::{khr, vk};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -14,16 +15,13 @@ impl Surface {
         window_handle: RawWindowHandle,
     ) -> Self {
         let surface_instance = khr::surface::Instance::new(&instance.entry, &instance.ash_instance);
-        let surface_khr = unsafe {
-            ash_window::create_surface(
-                &instance.entry,
-                &instance.ash_instance,
-                display_handle,
-                window_handle,
-                None,
-            )
-        }
-        .expect("Failed to create window surface");
+        let surface_khr = unsafe_vk_try!(ash_window::create_surface(
+            &instance.entry,
+            &instance.ash_instance,
+            display_handle,
+            window_handle,
+            None,
+        ));
 
         Self {
             surface_instance,

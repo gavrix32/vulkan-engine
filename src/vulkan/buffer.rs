@@ -1,3 +1,4 @@
+use crate::unsafe_vk_try;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::command_buffer::CommandBuffer;
 use crate::vulkan::device::Device;
@@ -28,8 +29,7 @@ impl Buffer {
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let buffer = unsafe { device.ash_device.create_buffer(&buffer_create_info, None) }
-            .expect("Failed to create buffer");
+        let buffer = unsafe_vk_try!(device.ash_device.create_buffer(&buffer_create_info, None));
 
         let memory_requirements =
             unsafe { device.ash_device.get_buffer_memory_requirements(buffer) };
@@ -43,15 +43,13 @@ impl Buffer {
                 memory_flags,
             ));
 
-        let memory = unsafe {
+        let memory = unsafe_vk_try!(
             device
                 .ash_device
                 .allocate_memory(&memory_allocate_info, None)
-        }
-        .expect("Failed to allocate buffer memory");
+        );
 
-        unsafe { device.ash_device.bind_buffer_memory(buffer, memory, 0) }
-            .expect("Failed to bind buffer memory");
+        unsafe_vk_try!(device.ash_device.bind_buffer_memory(buffer, memory, 0));
 
         Self {
             device,
@@ -91,17 +89,12 @@ impl Buffer {
     }
 
     pub fn map_memory(&mut self) {
-        self.p_data = Some(
-            unsafe {
-                self.device.ash_device.map_memory(
-                    self.memory,
-                    0,
-                    self.size,
-                    vk::MemoryMapFlags::empty(),
-                )
-            }
-            .expect("Failed to map staging buffer memory"),
-        );
+        self.p_data = Some(unsafe_vk_try!(self.device.ash_device.map_memory(
+            self.memory,
+            0,
+            self.size,
+            vk::MemoryMapFlags::empty(),
+        )));
     }
 
     pub fn unmap_memory(&self) {

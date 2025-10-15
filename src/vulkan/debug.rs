@@ -1,3 +1,4 @@
+use crate::unsafe_vk_try;
 use ash::ext;
 use ash::vk;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -18,11 +19,8 @@ pub fn setup_debug_messenger(
     }
 
     let debug_utils_instance = ext::debug_utils::Instance::new(entry, instance);
-    let debug_utils_messenger = unsafe {
-        debug_utils_instance
-            .create_debug_utils_messenger(&create_info, None)
-            .expect("Failed to create debug utils messenger")
-    };
+    let debug_utils_messenger =
+        unsafe_vk_try!(debug_utils_instance.create_debug_utils_messenger(&create_info, None));
 
     (Some(debug_utils_instance), Some(debug_utils_messenger))
 }

@@ -1,3 +1,4 @@
+use crate::unsafe_vk_try;
 use crate::vulkan::device::Device;
 use crate::vulkan::render_pass::RenderPass;
 use crate::vulkan::vertex::Vertex;
@@ -92,12 +93,11 @@ impl Pipeline {
         let layout_create_info =
             vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts);
 
-        let layout = unsafe {
+        let layout = unsafe_vk_try!(
             device
                 .ash_device
                 .create_pipeline_layout(&layout_create_info, None)
-        }
-        .expect("Failed to create pipeline layout");
+        );
 
         let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stage_create_infos)
@@ -113,14 +113,11 @@ impl Pipeline {
             .render_pass(render_pass.vk_render_pass)
             .subpass(0);
 
-        let pipelines = unsafe {
-            device.ash_device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                &[pipeline_create_info],
-                None,
-            )
-        }
-        .expect("Failed to create graphics pipelines");
+        let pipelines = unsafe_vk_try!(device.ash_device.create_graphics_pipelines(
+            vk::PipelineCache::null(),
+            &[pipeline_create_info],
+            None,
+        ));
 
         unsafe {
             device
@@ -141,12 +138,11 @@ impl Pipeline {
 
 fn create_shader_module(device: Arc<Device>, words: &[u32]) -> vk::ShaderModule {
     let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(words);
-    unsafe {
+    unsafe_vk_try!(
         device
             .ash_device
             .create_shader_module(&shader_module_create_info, None)
-    }
-    .expect("Failed to create shader module")
+    )
 }
 
 impl Drop for Pipeline {

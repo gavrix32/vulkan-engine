@@ -1,3 +1,4 @@
+use crate::unsafe_vk_try;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
 use crate::vulkan::command_buffer::CommandBuffer;
@@ -60,8 +61,7 @@ impl Image {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(msaa_samples);
 
-        let vk_image = unsafe { device.ash_device.create_image(&image_create_info, None) }
-            .expect("Failed to create image");
+        let vk_image = unsafe_vk_try!(device.ash_device.create_image(&image_create_info, None));
 
         let memory_requirements =
             unsafe { device.ash_device.get_image_memory_requirements(vk_image) };
@@ -75,15 +75,13 @@ impl Image {
                 vk::MemoryPropertyFlags::DEVICE_LOCAL,
             ));
 
-        let memory = unsafe {
+        let memory = unsafe_vk_try!(
             device
                 .ash_device
                 .allocate_memory(&memory_allocate_info, None)
-        }
-        .expect("Failed to allocate image memory");
+        );
 
-        unsafe { device.ash_device.bind_image_memory(vk_image, memory, 0) }
-            .expect("Failed to bind image memory");
+        unsafe_vk_try!(device.ash_device.bind_image_memory(vk_image, memory, 0));
 
         let view = create_image_view(device.clone(), vk_image, format, aspect, mip_levels);
 
@@ -193,8 +191,7 @@ impl Image {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(msaa_samples);
 
-        let vk_image = unsafe { device.ash_device.create_image(&image_create_info, None) }
-            .expect("Failed to create image");
+        let vk_image = unsafe_vk_try!(device.ash_device.create_image(&image_create_info, None));
 
         let memory_requirements =
             unsafe { device.ash_device.get_image_memory_requirements(vk_image) };
@@ -208,15 +205,13 @@ impl Image {
                 vk::MemoryPropertyFlags::DEVICE_LOCAL,
             ));
 
-        let memory = unsafe {
+        let memory = unsafe_vk_try!(
             device
                 .ash_device
                 .allocate_memory(&memory_allocate_info, None)
-        }
-        .expect("Failed to allocate image memory");
+        );
 
-        unsafe { device.ash_device.bind_image_memory(vk_image, memory, 0) }
-            .expect("Failed to bind image memory");
+        unsafe_vk_try!(device.ash_device.bind_image_memory(vk_image, memory, 0));
 
         transition_layout(
             device.clone(),
@@ -569,12 +564,11 @@ fn create_image_view(
             layer_count: 1,
         });
 
-    unsafe {
+    unsafe_vk_try!(
         device
             .ash_device
             .create_image_view(&image_view_create_info, None)
-    }
-    .expect("Failed to create image view")
+    )
 }
 
 fn create_sampler(
@@ -600,8 +594,7 @@ fn create_sampler(
         .min_lod(0.0)
         .max_lod(mip_levels as f32);
 
-    unsafe { device.ash_device.create_sampler(&sampler_create_info, None) }
-        .expect("Failed to create sampler")
+    unsafe_vk_try!(device.ash_device.create_sampler(&sampler_create_info, None))
 }
 
 impl Drop for Image {

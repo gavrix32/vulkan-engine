@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod buffer;
 pub mod command_buffer;
 mod debug;
+mod util;
 pub mod descriptor;
 pub mod device;
 pub mod image;

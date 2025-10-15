@@ -1,4 +1,5 @@
 use crate::renderer::QueueFamilyIndices;
+use crate::unsafe_vk_try;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain;
@@ -15,8 +16,7 @@ pub struct Adapter {
 
 impl Adapter {
     pub fn new(instance: &Instance, surface: &Surface) -> Self {
-        let adapters = unsafe { instance.ash_instance.enumerate_physical_devices() }
-            .expect("Failed to enumerate physical devices");
+        let adapters = unsafe_vk_try!(instance.ash_instance.enumerate_physical_devices());
         if adapters.len() == 0 {
             panic!("Failed to find GPUs with Vulkan support");
         }
@@ -60,12 +60,11 @@ fn check_physical_device_extensions_support(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
 ) -> bool {
-    let available_extensions = unsafe {
+    let available_extensions = unsafe_vk_try!(
         instance
             .ash_instance
             .enumerate_device_extension_properties(physical_device)
-    }
-    .expect("Failed to enumerate adapter extension properties");
+    );
 
     let mut required_extensions = HashSet::from(DEVICE_EXTENSIONS);
 

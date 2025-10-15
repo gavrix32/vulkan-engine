@@ -1,3 +1,4 @@
+use crate::unsafe_vk_try;
 use crate::vulkan::debug;
 use ash::{ext, vk};
 use raw_window_handle::RawDisplayHandle;
@@ -34,15 +35,14 @@ impl Instance {
 
         if validation {
             if !check_validation_layer_support(&entry) {
-                panic!("validation layers requested, but not available!");
+                panic!("Validation layers requested, but not available!");
             }
             debug_instance_create_info = debug_instance_create_info
                 .enabled_layer_names(&layer_cstring_pointers.1)
                 .push_next(&mut debug_utils_messenger_create_info);
         }
 
-        let ash_instance = unsafe { entry.create_instance(&debug_instance_create_info, None) }
-            .expect("Failed to create vulkan instance");
+        let ash_instance = unsafe_vk_try!(entry.create_instance(&debug_instance_create_info, None));
 
         let (debug_instance, debug_messenger) = debug::setup_debug_messenger(
             &entry,
@@ -75,8 +75,7 @@ fn get_required_extensions(
 }
 
 fn check_validation_layer_support(entry: &ash::Entry) -> bool {
-    let available_layers = unsafe { entry.enumerate_instance_layer_properties() }
-        .expect("Failed to enumerate layer properties");
+    let available_layers = unsafe_vk_try!(entry.enumerate_instance_layer_properties());
     for layer_name in debug::VALIDATION_LAYERS {
         let mut layer_found = false;
 

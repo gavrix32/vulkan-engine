@@ -1,3 +1,4 @@
+use crate::unsafe_vk_try;
 use crate::vulkan::device::Device;
 use ash::vk;
 use std::sync::Arc;
@@ -18,31 +19,28 @@ impl Descriptor {
     ) -> Self {
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
-        let layout = unsafe {
+        let layout = unsafe_vk_try!(
             device
                 .ash_device
                 .create_descriptor_set_layout(&layout_info, None)
-        }
-        .expect("Failed to create descriptor set layout");
+        );
         let layouts = vec![layout; max_sets];
 
         let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
             .max_sets(max_sets as u32);
 
-        let pool = unsafe {
+        let pool = unsafe_vk_try!(
             device
                 .ash_device
                 .create_descriptor_pool(&descriptor_pool_create_info, None)
-        }
-        .expect("Failed to create descriptor pool");
+        );
 
         let allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(pool)
             .set_layouts(&layouts);
 
-        let sets = unsafe { device.ash_device.allocate_descriptor_sets(&allocate_info) }
-            .expect("Failed to allocate descriptor sets");
+        let sets = unsafe_vk_try!(device.ash_device.allocate_descriptor_sets(&allocate_info));
 
         Self {
             device,

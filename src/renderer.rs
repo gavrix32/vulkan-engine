@@ -1,5 +1,4 @@
 use crate::camera::Camera;
-use crate::loader;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
 use crate::vulkan::descriptor::Descriptor;
@@ -11,6 +10,7 @@ use crate::vulkan::render_pass::RenderPass;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
 use crate::vulkan::vertex::Vertex;
+use crate::{loader, unsafe_vk_try};
 use ash::util::Align;
 use ash::vk;
 use glam::{Mat4, Vec3, Vec4};
@@ -468,8 +468,7 @@ impl Renderer {
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(queue_family_indices.graphics_family.unwrap());
 
-        unsafe { device.create_command_pool(&command_pool_create_info, None) }
-            .expect("Failed to create command pool")
+        unsafe_vk_try!(device.create_command_pool(&command_pool_create_info, None))
     }
 
     fn create_vertex_buffer(
@@ -679,8 +678,7 @@ impl Renderer {
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(command_buffers.capacity() as u32);
 
-        unsafe { device.allocate_command_buffers(&command_buffer_allocate_info) }
-            .expect("Failed to allocate command buffers")
+        unsafe_vk_try!(device.allocate_command_buffers(&command_buffer_allocate_info))
     }
 
     fn create_sync_objects(
@@ -698,20 +696,15 @@ impl Renderer {
             vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            image_available_semaphores.push(
-                unsafe { device.create_semaphore(&semaphore_create_info, None) }
-                    .expect("Failed to create image available semaphore"),
-            );
-            in_flight_fences.push(
-                unsafe { device.create_fence(&fence_create_info, None) }
-                    .expect("Failed to create in flight fence"),
-            );
+            image_available_semaphores.push(unsafe_vk_try!(
+                device.create_semaphore(&semaphore_create_info, None)
+            ));
+            in_flight_fences.push(unsafe_vk_try!(device.create_fence(&fence_create_info, None)));
         }
         for _ in 0..swapchain_image_count {
-            render_finished_semaphores.push(
-                unsafe { device.create_semaphore(&semaphore_create_info, None) }
-                    .expect("Failed to create render finished semaphore"),
-            );
+            render_finished_semaphores.push(unsafe_vk_try!(
+                device.create_semaphore(&semaphore_create_info, None)
+            ));
         }
 
         (
@@ -763,12 +756,11 @@ impl Renderer {
 
         let command_buffer = self.command_buffers[self.frame_in_flight_index];
 
-        unsafe {
+        unsafe_vk_try!(
             self.device
                 .ash_device
                 .begin_command_buffer(command_buffer, &command_buffer_begin_info)
-        }
-        .expect("Failed to begin recording command buffer");
+        );
 
         let light_pos_transform = Mat4::from_translation(Vec3::new(
             self.timer.elapsed().as_secs_f32().sin() * 5.0,
@@ -880,8 +872,7 @@ impl Renderer {
             self.device.ash_device.cmd_end_render_pass(command_buffer);
         };
 
-        unsafe { self.device.ash_device.end_command_buffer(command_buffer) }
-            .expect("Failed to end recording command buffer");
+        unsafe_vk_try!(self.device.ash_device.end_command_buffer(command_buffer));
     }
 
     fn update_uniform_buffer(&self, model: Mat4, light_pos: Vec4) {
@@ -952,14 +943,11 @@ impl Renderer {
     }
 
     pub fn draw_frame(&mut self) {
-        unsafe {
-            self.device.ash_device.wait_for_fences(
-                &[self.in_flight_fences[self.frame_in_flight_index]],
-                true,
-                u64::MAX,
-            )
-        }
-        .unwrap();
+        unsafe_vk_try!(self.device.ash_device.wait_for_fences(
+            &[self.in_flight_fences[self.frame_in_flight_index]],
+            true,
+            u64::MAX,
+        ));
 
         let image_index: u32;
 
@@ -975,20 +963,16 @@ impl Renderer {
             Some(index) => image_index = index,
         }
 
-        unsafe {
+        unsafe_vk_try!(
             self.device
                 .ash_device
                 .reset_fences(&[self.in_flight_fences[self.frame_in_flight_index]])
-        }
-        .unwrap();
+        );
 
-        unsafe {
-            self.device.ash_device.reset_command_buffer(
-                self.command_buffers[self.frame_in_flight_index],
-                vk::CommandBufferResetFlags::empty(),
-            )
-        }
-        .unwrap();
+        unsafe_vk_try!(self.device.ash_device.reset_command_buffer(
+            self.command_buffers[self.frame_in_flight_index],
+            vk::CommandBufferResetFlags::empty(),
+        ));
 
         self.record_command_buffer(image_index);
 
@@ -1004,14 +988,11 @@ impl Renderer {
             .signal_semaphores(&signal_semaphores);
         let submit_infos = [submit_info];
 
-        unsafe {
-            self.device.ash_device.queue_submit(
-                self.device.graphics_queue,
-                &submit_infos,
-                self.in_flight_fences[self.frame_in_flight_index],
-            )
-        }
-        .unwrap();
+        unsafe_vk_try!(self.device.ash_device.queue_submit(
+            self.device.graphics_queue,
+            &submit_infos,
+            self.in_flight_fences[self.frame_in_flight_index],
+        ));
 
         let swapchains = [self.swapchain.swapchain_khr];
         let image_indices = [image_index];
@@ -1092,12 +1073,11 @@ impl QueueFamilyIndices {
                 indices.graphics_family = Some(i);
             }
 
-            let present_support = unsafe {
+            let present_support = unsafe_vk_try!(
                 surface
                     .surface_instance
                     .get_physical_device_surface_support(physical_device, i, surface.surface_khr)
-            }
-            .expect("Failed to get adapter surface support");
+            );
             if present_support {
                 indices.present_family = Some(i);
             }

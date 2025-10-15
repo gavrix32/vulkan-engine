@@ -1,3 +1,4 @@
+use crate::unsafe_vk_try;
 use crate::vulkan::device::Device;
 use ash::vk;
 use std::sync::Arc;
@@ -93,12 +94,11 @@ impl RenderPass {
             .subpasses(&subpass_descriptions)
             .dependencies(&subpass_dependencies);
 
-        let vk_render_pass = unsafe {
+        let vk_render_pass = unsafe_vk_try!(
             device
                 .ash_device
                 .create_render_pass(&render_pass_create_info, None)
-        }
-        .expect("Failed to create render pass");
+        );
 
         Self {
             device,

@@ -3,6 +3,7 @@ use crate::vulkan::device::Device;
 use crate::vulkan::image::Image;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
+use crate::{unsafe_vk_try, vk_try};
 use ash::{khr, vk};
 use log::warn;
 use std::sync::Arc;
@@ -221,10 +222,8 @@ fn init(
     }
 
     let swapchain_device = khr::swapchain::Device::new(&instance.ash_instance, &device.ash_device);
-    let swapchain_khr = unsafe { swapchain_device.create_swapchain(&create_info, None) }
-        .expect("Failed to create swapchain");
-    let images = unsafe { swapchain_device.get_swapchain_images(swapchain_khr) }
-        .expect("Failed to get swapchain images");
+    let swapchain_khr = unsafe_vk_try!(swapchain_device.create_swapchain(&create_info, None));
+    let images = unsafe_vk_try!(swapchain_device.get_swapchain_images(swapchain_khr));
     let image_views = create_image_views(&images, surface_format.format, device.clone());
     let color_image = Image::new(
         instance,
@@ -299,12 +298,11 @@ fn create_image_views(
                     .layer_count(1),
             );
 
-        let image_view = unsafe {
+        let image_view = unsafe_vk_try!(
             device
                 .ash_device
                 .create_image_view(&image_view_create_info, None)
-        }
-        .expect("Failed to create image views");
+        );
         image_views.push(image_view)
     }
     image_views
@@ -351,18 +349,27 @@ impl SupportDetails {
     pub(crate) fn query_support(physical_device: vk::PhysicalDevice, surface: &Surface) -> Self {
         unsafe {
             Self {
-                capabilities: surface
-                    .surface_instance
-                    .get_physical_device_surface_capabilities(physical_device, surface.surface_khr)
-                    .expect("Failed to get adapter surface capabilities"),
-                formats: surface
-                    .surface_instance
-                    .get_physical_device_surface_formats(physical_device, surface.surface_khr)
-                    .expect("Failed to get adapter surface formats"),
-                present_modes: surface
-                    .surface_instance
-                    .get_physical_device_surface_present_modes(physical_device, surface.surface_khr)
-                    .expect("Failed to get adapter surface present modes"),
+                capabilities: vk_try!(
+                    surface
+                        .surface_instance
+                        .get_physical_device_surface_capabilities(
+                            physical_device,
+                            surface.surface_khr
+                        )
+                ),
+                formats: vk_try!(
+                    surface
+                        .surface_instance
+                        .get_physical_device_surface_formats(physical_device, surface.surface_khr)
+                ),
+                present_modes: vk_try!(
+                    surface
+                        .surface_instance
+                        .get_physical_device_surface_present_modes(
+                            physical_device,
+                            surface.surface_khr
+                        )
+                ),
             }
         }
     }
