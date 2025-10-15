@@ -132,7 +132,7 @@ impl Renderer {
             msaa_samples,
         );
 
-        let command_encoder = CommandEncoder::new(device.clone(), &adapter, MAX_FRAMES_IN_FLIGHT);
+        let encoder = CommandEncoder::new(device.clone(), &adapter, MAX_FRAMES_IN_FLIGHT);
 
         info!("Importing model");
         let (document, buffers_data, images_data) =
@@ -196,7 +196,7 @@ impl Renderer {
                 &instance,
                 &adapter,
                 device.clone(),
-                &command_encoder,
+                &encoder,
                 true,
                 vk::SampleCountFlags::TYPE_1,
                 vk::Filter::LINEAR,
@@ -211,7 +211,7 @@ impl Renderer {
             &instance,
             &adapter,
             device.clone(),
-            &command_encoder,
+            &encoder,
             true,
             vk::SampleCountFlags::TYPE_1,
             vk::Filter::NEAREST,
@@ -226,7 +226,7 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            &command_encoder,
+            &encoder,
             &vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         );
@@ -236,7 +236,7 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            &command_encoder,
+            &encoder,
             &indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
@@ -270,7 +270,7 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            &command_encoder,
+            &encoder,
             &light_vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         );
@@ -280,7 +280,7 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            &command_encoder,
+            &encoder,
             &light_indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
@@ -374,8 +374,6 @@ impl Renderer {
             &light_primitives,
         );
 
-        // let command_buffers = Self::create_command_buffers(&device.ash_device, command_pool);
-
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             Self::create_sync_objects(&device.ash_device, swapchain.images.len());
 
@@ -394,7 +392,7 @@ impl Renderer {
             pbr_pipeline,
             light_pipeline,
 
-            encoder: command_encoder,
+            encoder,
 
             _images: images,
 
@@ -932,6 +930,10 @@ impl Drop for Renderer {
                     .ash_device
                     .destroy_semaphore(self.render_finished_semaphores[i], None);
             }
+
+            self.device
+                .ash_device
+                .free_command_buffers(self.encoder.command_pool, &self.encoder.command_buffers);
 
             self.device
                 .ash_device

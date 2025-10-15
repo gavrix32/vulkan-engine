@@ -325,13 +325,3 @@ impl CommandEncoder {
         unsafe_vk_try!(self.device.ash_device.queue_wait_idle(queue));
     }
 }
-
-impl Drop for CommandEncoder {
-    fn drop(&mut self) {
-        unsafe {
-            self.device
-                .ash_device
-                .free_command_buffers(self.command_pool, &self.command_buffers);
-        }
-    }
-}

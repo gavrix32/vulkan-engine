@@ -1,7 +1,6 @@
 use crate::unsafe_vk_try;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
-use crate::vulkan::command_encoder;
 use crate::vulkan::command_encoder::CommandEncoder;
 use crate::vulkan::device::Device;
 use crate::vulkan::instance::Instance;
