@@ -99,7 +99,6 @@ impl Image {
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
-        command_encoder: &CommandEncoder,
         mipmapping: bool,
         msaa_samples: vk::SampleCountFlags,
         mag_filter: vk::Filter,
@@ -120,7 +119,6 @@ impl Image {
             instance,
             adapter,
             device,
-            command_encoder,
             mipmapping,
             msaa_samples,
             mag_filter,
@@ -135,7 +133,6 @@ impl Image {
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
-        command_encoder: &CommandEncoder,
         mip_mapping: bool,
         msaa_samples: vk::SampleCountFlags,
         mag_filter: vk::Filter,
@@ -215,7 +212,7 @@ impl Image {
 
         transition_layout(
             device.clone(),
-            command_encoder,
+            adapter,
             vk_image,
             layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -223,18 +220,17 @@ impl Image {
         );
         copy_from_buffer(
             device.clone(),
+            adapter,
             &staging_buffer,
             vk_image,
             width,
             height,
-            command_encoder,
         );
         if mip_mapping {
             generate_mipmaps(
                 instance,
                 device.clone(),
                 adapter,
-                command_encoder,
                 vk_image,
                 format,
                 width,
@@ -244,7 +240,7 @@ impl Image {
         } else {
             transition_layout(
                 device.clone(),
-                command_encoder,
+                adapter,
                 vk_image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -275,7 +271,6 @@ fn generate_mipmaps(
     instance: &Instance,
     device: Arc<Device>,
     adapter: &Adapter,
-    command_encoder: &CommandEncoder,
     vk_image: vk::Image,
     format: vk::Format,
     width: u32,
@@ -305,7 +300,7 @@ fn generate_mipmaps(
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .subresource_range(subresource_range);
 
-    let encoder = command_encoder.begin_single_time();
+    let encoder = CommandEncoder::begin_single_time(device.clone(), adapter);
 
     let mut mip_width = width as i32;
     let mut mip_height = height as i32;
@@ -416,7 +411,7 @@ fn generate_mipmaps(
 
 fn transition_layout(
     device: Arc<Device>,
-    command_encoder: &CommandEncoder,
+    adapter: &Adapter,
     image: vk::Image,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
@@ -461,7 +456,7 @@ fn transition_layout(
         error!("Unsupported layout transition");
     }
 
-    let encoder = command_encoder.begin_single_time();
+    let encoder = CommandEncoder::begin_single_time(device.clone(), adapter);
 
     encoder.cmd_pipeline_barrier(
         src_stage,
@@ -477,11 +472,11 @@ fn transition_layout(
 
 fn copy_from_buffer(
     device: Arc<Device>,
+    adapter: &Adapter,
     buffer: &Buffer,
     image: vk::Image,
     width: u32,
     height: u32,
-    command_encoder: &CommandEncoder,
 ) {
     let region = vk::BufferImageCopy::default()
         .buffer_offset(0)
@@ -500,7 +495,7 @@ fn copy_from_buffer(
             depth: 1,
         });
 
-    let encoder = command_encoder.begin_single_time();
+    let encoder = CommandEncoder::begin_single_time(device.clone(), adapter);
 
     encoder.cmd_copy_buffer_to_image(
         buffer.vk_buffer,

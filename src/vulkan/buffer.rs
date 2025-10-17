@@ -60,15 +60,10 @@ impl Buffer {
         }
     }
 
-    pub fn copy(
-        &self,
-        graphics_queue: vk::Queue,
-        dst_buffer: &Self,
-        command_encoder: &CommandEncoder,
-    ) {
+    pub fn copy(&self, graphics_queue: vk::Queue, adapter: &Adapter, dst_buffer: &Self) {
         let copy_region = vk::BufferCopy::default().size(self.size);
 
-        let encoder = command_encoder.begin_single_time();
+        let encoder = CommandEncoder::begin_single_time(self.device.clone(), adapter);
         encoder.cmd_copy_buffer(self.vk_buffer, dst_buffer.vk_buffer, &[copy_region]);
         encoder.end_single_time(graphics_queue);
     }

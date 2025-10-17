@@ -276,17 +276,27 @@ impl CommandEncoder {
         }
     }
 
-    pub fn begin_single_time(&self) -> Self {
-        let mut command_buffers: Vec<vk::CommandBuffer> = Vec::with_capacity(1);
+    pub fn begin_single_time(device: Arc<Device>, adapter: &Adapter) -> Self {
         let command_buffer_index = 0;
 
+        let command_pool_create_info = vk::CommandPoolCreateInfo::default()
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(adapter.queue_family_indices.graphics_family.unwrap());
+
+        let command_pool = unsafe_vk_try!(
+            device
+                .ash_device
+                .create_command_pool(&command_pool_create_info, None)
+        );
+
+        let command_buffers: Vec<vk::CommandBuffer> = Vec::with_capacity(1);
         let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(self.command_pool)
+            .command_pool(command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(command_buffers.capacity() as u32);
 
-        command_buffers = unsafe_vk_try!(
-            self.device
+        let command_buffers = unsafe_vk_try!(
+            device
                 .ash_device
                 .allocate_command_buffers(&command_buffer_allocate_info)
         );
@@ -294,14 +304,14 @@ impl CommandEncoder {
         let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-        unsafe_vk_try!(self.device.ash_device.begin_command_buffer(
+        unsafe_vk_try!(device.ash_device.begin_command_buffer(
             command_buffers[command_buffer_index],
             &command_buffer_begin_info
         ));
 
         Self {
-            device: self.device.clone(),
-            command_pool: self.command_pool,
+            device: device.clone(),
+            command_pool,
             command_buffers,
             command_buffer_index,
         }
@@ -323,5 +333,19 @@ impl CommandEncoder {
         ));
 
         unsafe_vk_try!(self.device.ash_device.queue_wait_idle(queue));
+    }
+}
+
+impl Drop for CommandEncoder {
+    fn drop(&mut self) {
+        unsafe {
+            self.device
+                .ash_device
+                .free_command_buffers(self.command_pool, &self.command_buffers);
+
+            self.device
+                .ash_device
+                .destroy_command_pool(self.command_pool, None);
+        }
     }
 }

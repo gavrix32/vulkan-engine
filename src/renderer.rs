@@ -199,7 +199,6 @@ impl Renderer {
                 &instance,
                 &adapter,
                 device.clone(),
-                &encoder,
                 true,
                 vk::SampleCountFlags::TYPE_1,
                 vk::Filter::LINEAR,
@@ -214,7 +213,6 @@ impl Renderer {
             &instance,
             &adapter,
             device.clone(),
-            &encoder,
             true,
             vk::SampleCountFlags::TYPE_1,
             vk::Filter::NEAREST,
@@ -229,7 +227,6 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            &encoder,
             &vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         );
@@ -239,7 +236,6 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            &encoder,
             &indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
@@ -273,7 +269,6 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            &encoder,
             &light_vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         );
@@ -283,7 +278,6 @@ impl Renderer {
             &adapter,
             device.clone(),
             device.graphics_queue,
-            &encoder,
             &light_indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
@@ -463,7 +457,6 @@ impl Renderer {
         adapter: &Adapter,
         device: Arc<Device>,
         graphics_queue: vk::Queue,
-        command_encoder: &CommandEncoder,
         data: &[T],
         usage: vk::BufferUsageFlags,
     ) -> Buffer {
@@ -496,7 +489,7 @@ impl Renderer {
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         );
 
-        staging_buffer.copy(graphics_queue, &vertex_buffer, command_encoder);
+        staging_buffer.copy(graphics_queue, adapter, &vertex_buffer);
 
         vertex_buffer
     }
@@ -906,16 +899,6 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
-        unsafe {
-            self.device.wait_idle();
-
-            self.device
-                .ash_device
-                .free_command_buffers(self.encoder.command_pool, &self.encoder.command_buffers);
-
-            self.device
-                .ash_device
-                .destroy_command_pool(self.encoder.command_pool, None);
-        }
+        self.device.wait_idle();
     }
 }

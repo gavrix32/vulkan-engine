@@ -10,6 +10,6 @@ pub mod pipeline;
 pub mod render_pass;
 pub mod surface;
 pub mod swapchain;
+pub mod sync;
 pub mod util;
 pub mod vertex;
-pub mod sync;
