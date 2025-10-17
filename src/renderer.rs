@@ -10,6 +10,7 @@ use crate::vulkan::pipeline::Pipeline;
 use crate::vulkan::render_pass::RenderPass;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
+use crate::vulkan::sync;
 use crate::vulkan::vertex::Vertex;
 use crate::{loader, unsafe_vk_try};
 use ash::util::Align;
@@ -55,6 +56,11 @@ struct UniformBufferData {
 }
 
 pub struct Renderer {
+    in_flight_fences: Vec<sync::Fence>,
+
+    image_available_semaphores: Vec<sync::Semaphore>,
+    render_finished_semaphores: Vec<sync::Semaphore>,
+
     uniform_buffers: Vec<Vec<Buffer>>,
 
     light_index_buffer: Buffer,
@@ -83,9 +89,6 @@ pub struct Renderer {
     instance: Instance,
 
     ///////////////////////////
-    image_available_semaphores: Vec<vk::Semaphore>,
-    render_finished_semaphores: Vec<vk::Semaphore>,
-    in_flight_fences: Vec<vk::Fence>,
     frame_in_flight: usize,
 
     msaa_samples: vk::SampleCountFlags,
@@ -375,7 +378,7 @@ impl Renderer {
         );
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
-            Self::create_sync_objects(&device.ash_device, swapchain.images.len());
+            Self::create_sync_objects(device.clone(), swapchain.images.len());
 
         Self {
             swapchain,
@@ -617,31 +620,21 @@ impl Renderer {
     }
 
     fn create_sync_objects(
-        device: &ash::Device,
+        device: Arc<Device>,
         swapchain_image_count: usize,
-    ) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
-        let mut image_available_semaphores: Vec<vk::Semaphore> =
+    ) -> (Vec<sync::Semaphore>, Vec<sync::Semaphore>, Vec<sync::Fence>) {
+        let mut image_available_semaphores: Vec<sync::Semaphore> =
             Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut render_finished_semaphores: Vec<vk::Semaphore> =
+        let mut render_finished_semaphores: Vec<sync::Semaphore> =
             Vec::with_capacity(swapchain_image_count);
-        let mut in_flight_fences: Vec<vk::Fence> = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-        let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-        let fence_create_info =
-            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+        let mut in_flight_fences: Vec<sync::Fence> = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            image_available_semaphores.push(unsafe_vk_try!(
-                device.create_semaphore(&semaphore_create_info, None)
-            ));
-            in_flight_fences.push(unsafe_vk_try!(
-                device.create_fence(&fence_create_info, None)
-            ));
+            image_available_semaphores.push(sync::Semaphore::new(device.clone()));
+            in_flight_fences.push(sync::Fence::new(device.clone(), true));
         }
         for _ in 0..swapchain_image_count {
-            render_finished_semaphores.push(unsafe_vk_try!(
-                device.create_semaphore(&semaphore_create_info, None)
-            ));
+            render_finished_semaphores.push(sync::Semaphore::new(device.clone()));
         }
 
         (
@@ -809,7 +802,7 @@ impl Renderer {
 
     pub fn draw_frame(&mut self) {
         unsafe_vk_try!(self.device.ash_device.wait_for_fences(
-            &[self.in_flight_fences[self.frame_in_flight]],
+            &[self.in_flight_fences[self.frame_in_flight].vk_fence],
             true,
             u64::MAX,
         ));
@@ -818,7 +811,7 @@ impl Renderer {
 
         match self
             .swapchain
-            .acquire_next_image(self.image_available_semaphores[self.frame_in_flight])
+            .acquire_next_image(self.image_available_semaphores[self.frame_in_flight].vk_semaphore)
         {
             None => {
                 warn!("Recreating swapchain...");
@@ -831,7 +824,7 @@ impl Renderer {
         unsafe_vk_try!(
             self.device
                 .ash_device
-                .reset_fences(&[self.in_flight_fences[self.frame_in_flight]])
+                .reset_fences(&[self.in_flight_fences[self.frame_in_flight].vk_fence])
         );
 
         unsafe_vk_try!(self.device.ash_device.reset_command_buffer(
@@ -841,10 +834,11 @@ impl Renderer {
 
         self.record_command_buffer(image_index);
 
-        let wait_semaphores = [self.image_available_semaphores[self.frame_in_flight]];
+        let wait_semaphores = [self.image_available_semaphores[self.frame_in_flight].vk_semaphore];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let command_buffers = [self.encoder.command_buffers[self.frame_in_flight]];
-        let signal_semaphores = [self.render_finished_semaphores[image_index as usize]];
+        let signal_semaphores =
+            [self.render_finished_semaphores[image_index as usize].vk_semaphore];
 
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
@@ -856,7 +850,7 @@ impl Renderer {
         unsafe_vk_try!(self.device.ash_device.queue_submit(
             self.device.graphics_queue,
             &submit_infos,
-            self.in_flight_fences[self.frame_in_flight],
+            self.in_flight_fences[self.frame_in_flight].vk_fence,
         ));
 
         let swapchains = [self.swapchain.swapchain_khr];
@@ -914,22 +908,6 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             self.device.wait_idle();
-
-            for i in 0..MAX_FRAMES_IN_FLIGHT {
-                self.device
-                    .ash_device
-                    .destroy_semaphore(self.image_available_semaphores[i], None);
-
-                self.device
-                    .ash_device
-                    .destroy_fence(self.in_flight_fences[i], None);
-            }
-
-            for i in 0..self.swapchain.images.len() {
-                self.device
-                    .ash_device
-                    .destroy_semaphore(self.render_finished_semaphores[i], None);
-            }
 
             self.device
                 .ash_device
