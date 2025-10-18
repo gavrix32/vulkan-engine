@@ -1,13 +1,12 @@
 use crate::camera::Camera;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
-use crate::vulkan::command_encoder::CommandEncoder;
 use crate::vulkan::descriptor::Descriptor;
 use crate::vulkan::device::Device;
+use crate::vulkan::encoder::Encoder;
 use crate::vulkan::image::Image;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::pipeline::Pipeline;
-use crate::vulkan::render_pass::RenderPass;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
 use crate::vulkan::sync;
@@ -71,7 +70,7 @@ pub struct Renderer {
 
     _images: Vec<Image>,
 
-    encoder: CommandEncoder,
+    encoder: Encoder,
 
     light_pipeline: Pipeline,
 
@@ -82,13 +81,11 @@ pub struct Renderer {
     _light_descriptor: Descriptor,
 
     swapchain: Swapchain,
-    render_pass: RenderPass,
     device: Arc<Device>,
     adapter: Adapter,
     surface: Surface,
     instance: Instance,
 
-    ///////////////////////////
     frame_in_flight: usize,
 
     msaa_samples: vk::SampleCountFlags,
@@ -118,24 +115,19 @@ impl Renderer {
         let adapter = Adapter::new(&instance, &surface);
         let device = Arc::new(Device::new(&instance, &adapter));
         let msaa_samples = Self::get_max_usable_sample_count(&instance, &adapter);
-        let render_pass = RenderPass::new(
-            device.clone(),
-            Swapchain::get_format(&adapter, &surface),
-            msaa_samples,
-        );
 
         let swapchain = Swapchain::new(
             &instance,
             &adapter,
             device.clone(),
             &surface,
-            render_pass.vk_render_pass,
+            // render_pass.vk_render_pass,
             width,
             height,
             msaa_samples,
         );
 
-        let encoder = CommandEncoder::new(device.clone(), &adapter, MAX_FRAMES_IN_FLIGHT);
+        let encoder = Encoder::new(device.clone(), &adapter, MAX_FRAMES_IN_FLIGHT);
 
         info!("Importing model");
         let (document, buffers_data, images_data) =
@@ -344,11 +336,14 @@ impl Renderer {
             light_descriptor_count,
         );
 
+        let color_format = Swapchain::get_format(&adapter, &surface);
+
         let pbr_pipeline = Pipeline::new(
             device.clone(),
             Vec::from(include_bytes!("shaders/spirv/vertex.spv")),
             Vec::from(include_bytes!("shaders/spirv/fragment.spv")),
-            &render_pass,
+            color_format,
+            vk::Format::D32_SFLOAT_S8_UINT,
             &[descriptor.layout],
             msaa_samples,
         );
@@ -357,7 +352,8 @@ impl Renderer {
             device.clone(),
             Vec::from(include_bytes!("shaders/spirv/light_vertex.spv")),
             Vec::from(include_bytes!("shaders/spirv/light_fragment.spv")),
-            &render_pass,
+            color_format,
+            vk::Format::D32_SFLOAT_S8_UINT,
             &[descriptor.layout],
             msaa_samples,
         );
@@ -376,7 +372,6 @@ impl Renderer {
 
         Self {
             swapchain,
-            render_pass,
             device,
             adapter,
             surface,
@@ -638,28 +633,6 @@ impl Renderer {
     }
 
     fn record_command_buffer(&mut self, image_index: u32) {
-        let clear_color = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
-            },
-        };
-        let clear_depth = vk::ClearValue {
-            depth_stencil: vk::ClearDepthStencilValue {
-                depth: 1.0,
-                stencil: 0,
-            },
-        };
-        let clear_values = [clear_color, clear_depth];
-
-        let render_pass_begin_info = vk::RenderPassBeginInfo::default()
-            .render_pass(self.render_pass.vk_render_pass)
-            .framebuffer(self.swapchain.framebuffers[image_index as usize])
-            .render_area(vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.swapchain.extent,
-            })
-            .clear_values(&clear_values);
-
         let viewport = vk::Viewport::default()
             .x(0.0)
             .y(0.0)
@@ -683,8 +656,58 @@ impl Renderer {
 
         self.encoder.begin(self.frame_in_flight);
 
-        self.encoder
-            .cmd_begin_render_pass(&render_pass_begin_info, vk::SubpassContents::INLINE);
+        Image::transition_layout(
+            &self.encoder,
+            self.swapchain.images[image_index as usize],
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            1,
+        );
+
+        let clear_color = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
+
+        let color_attachment = vk::RenderingAttachmentInfo::default()
+            .image_view(self.swapchain.color_image.view)
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+            .resolve_image_view(self.swapchain.image_views[image_index as usize])
+            .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .clear_value(clear_color);
+        let color_attachments = [color_attachment];
+
+        let clear_depth = vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue {
+                depth: 1.0,
+                stencil: 0,
+            },
+        };
+
+        let depth_attachment = vk::RenderingAttachmentInfo::default()
+            .image_view(self.swapchain.depth_image.view)
+            .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .clear_value(clear_depth);
+
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: self.swapchain.extent.width,
+                    height: self.swapchain.extent.height,
+                },
+            })
+            .layer_count(1)
+            .color_attachments(&color_attachments)
+            .depth_attachment(&depth_attachment);
+
+        self.encoder.cmd_begin_rendering(&rendering_info);
 
         self.encoder.cmd_set_viewport(0, &viewports);
         self.encoder.cmd_set_scissor(0, &scissors);
@@ -747,7 +770,16 @@ impl Renderer {
                 .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
         }
 
-        self.encoder.cmd_end_render_pass();
+        self.encoder.cmd_end_rendering();
+
+        Image::transition_layout(
+            &self.encoder,
+            self.swapchain.images[image_index as usize],
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            1,
+        );
+
         self.encoder.end();
     }
 
@@ -889,7 +921,6 @@ impl Renderer {
             &self.instance,
             &self.adapter,
             &self.surface,
-            self.render_pass.vk_render_pass,
             self.width,
             self.height,
             self.msaa_samples,

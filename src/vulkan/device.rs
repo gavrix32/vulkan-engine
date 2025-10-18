@@ -32,9 +32,14 @@ impl Device {
         let adapter_extension_name_pointers: Vec<*const c_char> =
             DEVICE_EXTENSIONS.iter().map(|s| s.as_ptr()).collect();
 
+        let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::default()
+            .dynamic_rendering(true)
+            .synchronization2(true);
+
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)
-            .enabled_extension_names(&*adapter_extension_name_pointers);
+            .enabled_extension_names(&*adapter_extension_name_pointers)
+            .push_next(&mut vulkan13_features);
 
         let ash_device = unsafe_vk_try!(instance.ash_instance.create_device(
             adapter.physical_device,

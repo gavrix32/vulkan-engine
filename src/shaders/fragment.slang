@@ -21,7 +21,7 @@ static const float EPSILON = 0.00001;
 // H - halfway vector
 // Lo - outgoing light
 // Li - incoming light
-// Le - emmited light
+// Le - emitted light
 // F0 - base reflectance
 // kD - diffuse fraction
 // kS - specular fraction
@@ -122,7 +122,7 @@ void main(
     float distance = length(ubo.light_pos.xyz - frag_pos);
     float attenuation = 1.0 / pow(distance, 2.0);
     float3 Li = light_color * attenuation;
-    float3 Le = 0.03 * albedo;
+    float3 Le = 0.02 * albedo;
     float3 Lo = Le + BRDF * Li * NdotL;
 
     out_color = float4(Lo, 1.0);

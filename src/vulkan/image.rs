@@ -1,8 +1,8 @@
 use crate::unsafe_vk_try;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
-use crate::vulkan::command_encoder::CommandEncoder;
 use crate::vulkan::device::Device;
+use crate::vulkan::encoder::Encoder;
 use crate::vulkan::instance::Instance;
 use ash::util::Align;
 use ash::vk;
@@ -210,14 +210,16 @@ impl Image {
 
         unsafe_vk_try!(device.ash_device.bind_image_memory(vk_image, memory, 0));
 
-        transition_layout(
-            device.clone(),
-            adapter,
+        let encoder = Encoder::begin_single_time(device.clone(), adapter);
+        Self::transition_layout(
+            &encoder,
             vk_image,
             layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             mip_levels,
         );
+        encoder.end_single_time(device.graphics_queue);
+
         copy_from_buffer(
             device.clone(),
             adapter,
@@ -238,14 +240,15 @@ impl Image {
                 mip_levels,
             );
         } else {
-            transition_layout(
-                device.clone(),
-                adapter,
+            let encoder = Encoder::begin_single_time(device.clone(), adapter);
+            Self::transition_layout(
+                &encoder,
                 vk_image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 mip_levels,
             );
+            encoder.end_single_time(device.graphics_queue);
         }
 
         let view = create_image_view(
@@ -264,6 +267,69 @@ impl Image {
             view,
             sampler: Some(sampler),
         }
+    }
+
+    pub fn transition_layout(
+        encoder: &Encoder,
+        image: vk::Image,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+        mip_levels: u32,
+    ) {
+        let (src_stage, dst_stage, src_access, dst_access) = match (old_layout, new_layout) {
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::TRANSFER_WRITE,
+            ),
+            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                vk::PipelineStageFlags2::TRANSFER,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::AccessFlags2::TRANSFER_WRITE,
+                vk::AccessFlags2::SHADER_READ,
+            ),
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL) => (
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            ),
+            (vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR) => (
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                vk::AccessFlags2::empty(),
+            ),
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL) => (
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            ),
+            _ => panic!("Unsupported layout transition"),
+        };
+
+        let barrier = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(src_stage)
+            .src_access_mask(src_access)
+            .dst_stage_mask(dst_stage)
+            .dst_access_mask(dst_access)
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .image(image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: mip_levels,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        let barriers = [barrier];
+        let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
+
+        encoder.cmd_pipeline_barrier2(&dependency_info);
     }
 }
 
@@ -294,13 +360,9 @@ fn generate_mipmaps(
         .layer_count(1)
         .level_count(1);
 
-    let mut barrier = vk::ImageMemoryBarrier::default()
-        .image(vk_image)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .subresource_range(subresource_range);
+    let mut barrier = vk::ImageMemoryBarrier2::default().image(vk_image);
 
-    let encoder = CommandEncoder::begin_single_time(device.clone(), adapter);
+    let encoder = Encoder::begin_single_time(device.clone(), adapter);
 
     let mut mip_width = width as i32;
     let mut mip_height = height as i32;
@@ -309,20 +371,17 @@ fn generate_mipmaps(
         subresource_range = subresource_range.base_mip_level(i - 1);
 
         barrier = barrier
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
             .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
             .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
             .subresource_range(subresource_range);
+        let barriers = [barrier];
+        let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
 
-        encoder.cmd_pipeline_barrier(
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier],
-        );
+        encoder.cmd_pipeline_barrier2(&dependency_info);
 
         let blit = vk::ImageBlit::default()
             .src_offsets([
@@ -366,19 +425,16 @@ fn generate_mipmaps(
         );
 
         barrier = barrier
+            .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
+            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+            .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
             .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ);
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let barriers = [barrier];
+        let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
 
-        encoder.cmd_pipeline_barrier(
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier],
-        );
+        encoder.cmd_pipeline_barrier2(&dependency_info);
 
         if mip_width > 1 {
             mip_width /= 2
@@ -391,82 +447,17 @@ fn generate_mipmaps(
     subresource_range = subresource_range.base_mip_level(mip_levels - 1);
 
     barrier = barrier
+        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+        .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+        .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
         .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
         .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-        .dst_access_mask(vk::AccessFlags::SHADER_READ)
         .subresource_range(subresource_range);
+    let barriers = [barrier];
+    let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
 
-    encoder.cmd_pipeline_barrier(
-        vk::PipelineStageFlags::TRANSFER,
-        vk::PipelineStageFlags::FRAGMENT_SHADER,
-        vk::DependencyFlags::empty(),
-        &[],
-        &[],
-        &[barrier],
-    );
-
-    encoder.end_single_time(device.graphics_queue);
-}
-
-fn transition_layout(
-    device: Arc<Device>,
-    adapter: &Adapter,
-    image: vk::Image,
-    old_layout: vk::ImageLayout,
-    new_layout: vk::ImageLayout,
-    mip_levels: u32,
-) {
-    let mut barrier = vk::ImageMemoryBarrier::default()
-        .image(image)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .old_layout(old_layout)
-        .new_layout(new_layout)
-        .subresource_range(vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: mip_levels,
-            base_array_layer: 0,
-            layer_count: 1,
-        });
-
-    let mut src_stage = vk::PipelineStageFlags::default();
-    let mut dst_stage = vk::PipelineStageFlags::default();
-
-    if old_layout == vk::ImageLayout::UNDEFINED
-        && new_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL
-    {
-        barrier = barrier
-            .src_access_mask(vk::AccessFlags::NONE)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-
-        src_stage = vk::PipelineStageFlags::TOP_OF_PIPE;
-        dst_stage = vk::PipelineStageFlags::TRANSFER;
-    } else if old_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL
-        && new_layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-    {
-        barrier = barrier
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ);
-
-        src_stage = vk::PipelineStageFlags::TRANSFER;
-        dst_stage = vk::PipelineStageFlags::FRAGMENT_SHADER;
-    } else {
-        error!("Unsupported layout transition");
-    }
-
-    let encoder = CommandEncoder::begin_single_time(device.clone(), adapter);
-
-    encoder.cmd_pipeline_barrier(
-        src_stage,
-        dst_stage,
-        vk::DependencyFlags::empty(),
-        &[],
-        &[],
-        &[barrier],
-    );
-
+    encoder.cmd_pipeline_barrier2(&dependency_info);
     encoder.end_single_time(device.graphics_queue);
 }
 
@@ -495,7 +486,7 @@ fn copy_from_buffer(
             depth: 1,
         });
 
-    let encoder = CommandEncoder::begin_single_time(device.clone(), adapter);
+    let encoder = Encoder::begin_single_time(device.clone(), adapter);
 
     encoder.cmd_copy_buffer_to_image(
         buffer.vk_buffer,

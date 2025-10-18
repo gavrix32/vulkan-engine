@@ -1,13 +1,12 @@
 pub mod adapter;
 pub mod buffer;
-pub mod command_encoder;
 pub mod debug;
 pub mod descriptor;
 pub mod device;
+pub mod encoder;
 pub mod image;
 pub mod instance;
 pub mod pipeline;
-pub mod render_pass;
 pub mod surface;
 pub mod swapchain;
 pub mod sync;

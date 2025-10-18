@@ -4,14 +4,14 @@ use crate::vulkan::device::Device;
 use ash::vk;
 use std::sync::Arc;
 
-pub struct CommandEncoder {
+pub struct Encoder {
     device: Arc<Device>,
     pub command_pool: vk::CommandPool,
     pub command_buffers: Vec<vk::CommandBuffer>,
     command_buffer_index: usize,
 }
 
-impl CommandEncoder {
+impl Encoder {
     pub fn new(device: Arc<Device>, adapter: &Adapter, max_command_buffers: usize) -> Self {
         let command_pool_create_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
@@ -193,27 +193,13 @@ impl CommandEncoder {
         }
     }
 
-    pub fn cmd_pipeline_barrier(
-        &self,
-        src_stage_mask: vk::PipelineStageFlags,
-        dst_stage_mask: vk::PipelineStageFlags,
-        dependency_flags: vk::DependencyFlags,
-        memory_barriers: &[vk::MemoryBarrier],
-        buffer_memory_barriers: &[vk::BufferMemoryBarrier],
-        image_memory_barriers: &[vk::ImageMemoryBarrier],
-    ) {
+    pub fn cmd_pipeline_barrier2(&self, dependency_info: &vk::DependencyInfo) {
         let cmd = self.command_buffers[self.command_buffer_index];
 
         unsafe {
-            self.device.ash_device.cmd_pipeline_barrier(
-                cmd,
-                src_stage_mask,
-                dst_stage_mask,
-                dependency_flags,
-                memory_barriers,
-                buffer_memory_barriers,
-                image_memory_barriers,
-            );
+            self.device
+                .ash_device
+                .cmd_pipeline_barrier2(cmd, dependency_info);
         }
     }
 
@@ -273,6 +259,24 @@ impl CommandEncoder {
                 regions,
                 filter,
             );
+        }
+    }
+
+    pub fn cmd_begin_rendering(&self, rendering_info: &vk::RenderingInfo) {
+        let cmd = self.command_buffers[self.command_buffer_index];
+
+        unsafe {
+            self.device
+                .ash_device
+                .cmd_begin_rendering(cmd, rendering_info);
+        }
+    }
+
+    pub fn cmd_end_rendering(&self) {
+        let cmd = self.command_buffers[self.command_buffer_index];
+
+        unsafe {
+            self.device.ash_device.cmd_end_rendering(cmd);
         }
     }
 
@@ -336,7 +340,7 @@ impl CommandEncoder {
     }
 }
 
-impl Drop for CommandEncoder {
+impl Drop for Encoder {
     fn drop(&mut self) {
         unsafe {
             self.device

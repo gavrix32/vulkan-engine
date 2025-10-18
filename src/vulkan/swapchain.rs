@@ -17,7 +17,6 @@ pub struct Swapchain {
     pub image_views: Vec<vk::ImageView>,
     pub color_image: Image,
     pub depth_image: Image,
-    pub framebuffers: Vec<vk::Framebuffer>,
 }
 
 impl Swapchain {
@@ -26,7 +25,6 @@ impl Swapchain {
         adapter: &Adapter,
         device: Arc<Device>,
         surface: &Surface,
-        render_pass: vk::RenderPass,
         width: u32,
         height: u32,
         msaa_samples: vk::SampleCountFlags,
@@ -39,13 +37,11 @@ impl Swapchain {
             image_views,
             color_image,
             depth_image,
-            framebuffers,
         ) = init(
             instance,
             adapter,
             device.clone(),
             surface,
-            render_pass,
             width,
             height,
             msaa_samples,
@@ -60,7 +56,6 @@ impl Swapchain {
             image_views,
             color_image,
             depth_image,
-            framebuffers,
         }
     }
 
@@ -70,13 +65,6 @@ impl Swapchain {
     }
 
     pub(crate) fn destroy(&self) {
-        for framebuffer in &self.framebuffers {
-            unsafe {
-                self.device
-                    .ash_device
-                    .destroy_framebuffer(*framebuffer, None)
-            };
-        }
         for image_view in &self.image_views {
             unsafe { self.device.ash_device.destroy_image_view(*image_view, None) };
         }
@@ -91,7 +79,6 @@ impl Swapchain {
         instance: &Instance,
         adapter: &Adapter,
         surface: &Surface,
-        render_pass: vk::RenderPass,
         width: u32,
         height: u32,
         msaa_samples: vk::SampleCountFlags,
@@ -108,13 +95,11 @@ impl Swapchain {
             image_views,
             color_image,
             depth_image,
-            framebuffers,
         ) = init(
             instance,
             adapter,
             self.device.clone(),
             surface,
-            render_pass,
             width,
             height,
             msaa_samples,
@@ -127,7 +112,6 @@ impl Swapchain {
         self.image_views = image_views;
         self.color_image = color_image;
         self.depth_image = depth_image;
-        self.framebuffers = framebuffers;
     }
 
     pub fn acquire_next_image(&mut self, signal_semaphore: vk::Semaphore) -> Option<u32> {
@@ -168,7 +152,6 @@ fn init(
     adapter: &Adapter,
     device: Arc<Device>,
     surface: &Surface,
-    render_pass: vk::RenderPass,
     width: u32,
     height: u32,
     msaa_samples: vk::SampleCountFlags,
@@ -180,7 +163,6 @@ fn init(
     Vec<vk::ImageView>,
     Image,
     Image,
-    Vec<vk::Framebuffer>,
 ) {
     let support_details = SupportDetails::query_support(adapter.physical_device, surface);
 
@@ -249,14 +231,6 @@ fn init(
         false,
         msaa_samples,
     );
-    let framebuffers = create_framebuffers(
-        device.clone(),
-        extent,
-        &image_views,
-        &color_image,
-        &depth_image,
-        render_pass,
-    );
 
     (
         swapchain_device,
@@ -266,7 +240,6 @@ fn init(
         image_views,
         color_image,
         depth_image,
-        framebuffers,
     )
 }
 
@@ -306,37 +279,6 @@ fn create_image_views(
         image_views.push(image_view)
     }
     image_views
-}
-
-fn create_framebuffers(
-    device: Arc<Device>,
-    swapchain_extent: vk::Extent2D,
-    swapchain_image_views: &Vec<vk::ImageView>,
-    color_image: &Image,
-    depth_image: &Image,
-    render_pass: vk::RenderPass,
-) -> Vec<vk::Framebuffer> {
-    let mut framebuffers = Vec::new();
-
-    for i in 0..swapchain_image_views.len() {
-        let attachments = [color_image.view, depth_image.view, swapchain_image_views[i]];
-        let framebuffer_create_info = vk::FramebufferCreateInfo::default()
-            .render_pass(render_pass)
-            .attachments(&attachments)
-            .width(swapchain_extent.width)
-            .height(swapchain_extent.height)
-            .layers(1);
-
-        let framebuffer = unsafe {
-            device
-                .ash_device
-                .create_framebuffer(&framebuffer_create_info, None)
-        }
-        .expect("Failed to create framebuffer");
-
-        framebuffers.push(framebuffer);
-    }
-    framebuffers
 }
 
 pub(crate) struct SupportDetails {

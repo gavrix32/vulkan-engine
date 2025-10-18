@@ -1,6 +1,5 @@
 use crate::unsafe_vk_try;
 use crate::vulkan::device::Device;
-use crate::vulkan::render_pass::RenderPass;
 use crate::vulkan::vertex::Vertex;
 use ash::vk;
 use std::io::Cursor;
@@ -17,7 +16,8 @@ impl Pipeline {
         device: Arc<Device>,
         vertex_shader_bytes: Vec<u8>,
         fragment_shader_bytes: Vec<u8>,
-        render_pass: &RenderPass,
+        color_format: vk::Format,
+        depth_format: vk::Format,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
         msaa_samples: vk::SampleCountFlags,
     ) -> Self {
@@ -99,6 +99,12 @@ impl Pipeline {
                 .create_pipeline_layout(&layout_create_info, None)
         );
 
+        let color_formats = [color_format];
+
+        let mut pipeline_rendering_create_info = vk::PipelineRenderingCreateInfo::default()
+            .color_attachment_formats(&color_formats)
+            .depth_attachment_format(depth_format);
+
         let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stage_create_infos)
             .vertex_input_state(&vertex_input_state)
@@ -110,8 +116,7 @@ impl Pipeline {
             .depth_stencil_state(&depth_stencil_state)
             .dynamic_state(&dynamic_state)
             .layout(layout)
-            .render_pass(render_pass.vk_render_pass)
-            .subpass(0);
+            .push_next(&mut pipeline_rendering_create_info);
 
         let pipelines = unsafe_vk_try!(device.ash_device.create_graphics_pipelines(
             vk::PipelineCache::null(),
