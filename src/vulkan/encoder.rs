@@ -63,28 +63,6 @@ impl Encoder {
         );
     }
 
-    pub fn cmd_begin_render_pass(
-        &self,
-        render_pass_begin: &vk::RenderPassBeginInfo,
-        contents: vk::SubpassContents,
-    ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
-
-        unsafe {
-            self.device
-                .ash_device
-                .cmd_begin_render_pass(cmd, render_pass_begin, contents);
-        }
-    }
-
-    pub fn cmd_end_render_pass(&self) {
-        let cmd = self.command_buffers[self.command_buffer_index];
-
-        unsafe {
-            self.device.ash_device.cmd_end_render_pass(cmd);
-        }
-    }
-
     pub fn cmd_set_viewport(&self, first_viewport: u32, viewports: &[vk::Viewport]) {
         let cmd = self.command_buffers[self.command_buffer_index];
 
