@@ -3,6 +3,7 @@ use crate::vulkan::device::Device;
 use crate::vulkan::image::Image;
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
+use crate::vulkan::sync::Semaphore;
 use crate::{unsafe_vk_try, vk_try};
 use ash::{khr, vk};
 use log::warn;
@@ -114,12 +115,12 @@ impl Swapchain {
         self.depth_image = depth_image;
     }
 
-    pub fn acquire_next_image(&mut self, signal_semaphore: vk::Semaphore) -> Option<u32> {
+    pub fn acquire_next_image(&mut self, signal_semaphore: &Semaphore) -> Option<u32> {
         let acquire_result = unsafe {
             self.swapchain_device.acquire_next_image(
                 self.swapchain_khr,
                 u64::MAX,
-                signal_semaphore,
+                signal_semaphore.vk_semaphore,
                 vk::Fence::null(),
             )
         };
@@ -144,6 +145,39 @@ impl Swapchain {
         }
 
         Some(image_index)
+    }
+
+    pub fn present(&self, image_index: u32, wait_semaphore: &Semaphore) -> bool {
+        let swapchains = [self.swapchain_khr];
+        let image_indices = [image_index];
+        let wait_semaphores = [wait_semaphore.vk_semaphore];
+
+        let present_info_khr = vk::PresentInfoKHR::default()
+            .wait_semaphores(&wait_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+
+        let present_result = unsafe {
+            self.swapchain_device
+                .queue_present(self.device.present_queue, &present_info_khr)
+        };
+
+        match present_result {
+            Ok(is_suboptimal) => {
+                if is_suboptimal {
+                    warn!("Swapchain is suboptimal, recreating...");
+                } else {
+                    return true;
+                }
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                warn!("Swapchain is out of date, recreating...");
+            }
+            Err(e) => {
+                panic!("Failed to present swapchain image: {:?}", e);
+            }
+        }
+        false
     }
 }
 

@@ -746,7 +746,7 @@ impl Renderer {
 
         match self
             .swapchain
-            .acquire_next_image(self.image_available_semaphores[self.frame_in_flight].vk_semaphore)
+            .acquire_next_image(&self.image_available_semaphores[self.frame_in_flight])
         {
             None => {
                 warn!("Recreating swapchain...");
@@ -769,53 +769,17 @@ impl Renderer {
 
         self.record_command_buffer(image_index);
 
-        let wait_semaphores = [self.image_available_semaphores[self.frame_in_flight].vk_semaphore];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let command_buffers = [self.encoder.command_buffers[self.frame_in_flight]];
-        let signal_semaphores =
-            [self.render_finished_semaphores[image_index as usize].vk_semaphore];
+        let signal_semaphore = &self.render_finished_semaphores[image_index as usize];
 
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(&wait_semaphores)
-            .wait_dst_stage_mask(&wait_stages)
-            .command_buffers(&command_buffers)
-            .signal_semaphores(&signal_semaphores);
-        let submit_infos = [submit_info];
+        self.device.submit_graphics(
+            self.encoder.command_buffers[self.frame_in_flight],
+            &self.image_available_semaphores[self.frame_in_flight],
+            signal_semaphore,
+            &self.in_flight_fences[self.frame_in_flight],
+        );
 
-        unsafe_vk_try!(self.device.ash_device.queue_submit(
-            self.device.graphics_queue,
-            &submit_infos,
-            self.in_flight_fences[self.frame_in_flight].vk_fence,
-        ));
-
-        let swapchains = [self.swapchain.swapchain_khr];
-        let image_indices = [image_index];
-
-        let present_info_khr = vk::PresentInfoKHR::default()
-            .wait_semaphores(&signal_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-
-        let present_result = unsafe {
-            self.swapchain
-                .swapchain_device
-                .queue_present(self.device.present_queue, &present_info_khr)
-        };
-
-        match present_result {
-            Ok(is_suboptimal) => {
-                if is_suboptimal {
-                    warn!("Swapchain is suboptimal, recreating...");
-                    self.recreate_swapchain();
-                }
-            }
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                warn!("Swapchain is out of date, recreating...");
-                self.recreate_swapchain();
-            }
-            Err(e) => {
-                panic!("Failed to present swapchain image: {:?}", e);
-            }
+        if !self.swapchain.present(image_index, signal_semaphore) {
+            self.recreate_swapchain();
         }
 
         if self.framebuffer_resized {

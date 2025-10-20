@@ -1,6 +1,7 @@
 use crate::unsafe_vk_try;
 use crate::vulkan::adapter::{Adapter, DEVICE_EXTENSIONS};
 use crate::vulkan::instance::Instance;
+use crate::vulkan::sync::{Fence, Semaphore};
 use ash::vk;
 use std::collections::HashSet;
 use std::ffi::c_char;
@@ -72,6 +73,31 @@ impl Device {
 
     pub fn wait_idle(&self) {
         unsafe_vk_try!(self.ash_device.device_wait_idle());
+    }
+
+    pub fn submit_graphics(
+        &self,
+        cmd_buffer: vk::CommandBuffer,
+        wait_semaphore: &Semaphore,
+        signal_semaphore: &Semaphore,
+        fence: &Fence,
+    ) {
+        let wait_semaphores = [wait_semaphore.vk_semaphore];
+        let signal_semaphores = [signal_semaphore.vk_semaphore];
+        let cmd_buffers = [cmd_buffer];
+
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+            .command_buffers(&cmd_buffers)
+            .signal_semaphores(&signal_semaphores);
+        let submit_infos = [submit_info];
+
+        unsafe_vk_try!(self.ash_device.queue_submit(
+            self.graphics_queue,
+            &submit_infos,
+            fence.vk_fence,
+        ));
     }
 }
 
