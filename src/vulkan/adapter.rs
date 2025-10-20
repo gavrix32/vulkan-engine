@@ -32,6 +32,37 @@ impl Adapter {
         }
         panic!("Failed to find a suitable GPU");
     }
+
+    pub fn max_usable_sample_count(&self, instance: &Instance) -> vk::SampleCountFlags {
+        let properties = unsafe {
+            instance
+                .ash_instance
+                .get_physical_device_properties(self.physical_device)
+        };
+        let counts = properties.limits.framebuffer_color_sample_counts
+            & properties.limits.framebuffer_depth_sample_counts;
+
+        if counts.contains(vk::SampleCountFlags::TYPE_64) {
+            return vk::SampleCountFlags::TYPE_64;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_32) {
+            return vk::SampleCountFlags::TYPE_32;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_16) {
+            return vk::SampleCountFlags::TYPE_16;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_8) {
+            return vk::SampleCountFlags::TYPE_8;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_4) {
+            return vk::SampleCountFlags::TYPE_4;
+        }
+        if counts.contains(vk::SampleCountFlags::TYPE_2) {
+            return vk::SampleCountFlags::TYPE_2;
+        }
+
+        vk::SampleCountFlags::TYPE_1
+    }
 }
 
 fn is_physical_device_suitable(

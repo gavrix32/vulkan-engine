@@ -56,9 +56,6 @@ impl<'a> Geometry for MeshView<'a> {
 pub(crate) struct PrimitiveInfo {
     pub(crate) first_index: u32,
     pub(crate) index_count: u32,
-    pub(crate) albedo_index: Option<usize>,
-    pub(crate) normal_index: Option<usize>,
-    pub(crate) metallic_roughness_index: Option<usize>,
     pub(crate) model_matrix: Mat4,
 }
 
@@ -120,15 +117,17 @@ fn traverse_node(
                     normal: [norm[0], norm[1], norm[2]],
                     tangent: [0.0; 4],
                     tex_coord: tex_coords.get(i).copied().unwrap_or([0.0, 0.0]),
+                    material: [
+                        albedo_index.unwrap_or(0) as u32,
+                        normal_index.unwrap_or(0) as u32,
+                        metallic_roughness_index.unwrap_or(0) as u32,
+                    ],
                 });
             }
 
             let primitive_info = PrimitiveInfo {
                 first_index,
                 index_count,
-                albedo_index,
-                normal_index,
-                metallic_roughness_index,
                 model_matrix,
             };
             primitives.push(primitive_info);

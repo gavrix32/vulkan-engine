@@ -7,6 +7,7 @@ pub(crate) struct Vertex {
     pub(crate) normal: [f32; 3],
     pub(crate) tangent: [f32; 4],
     pub(crate) tex_coord: [f32; 2],
+    pub(crate) material: [u32; 3],
 }
 
 impl Vertex {
@@ -17,7 +18,7 @@ impl Vertex {
             .input_rate(vk::VertexInputRate::VERTEX)
     }
 
-    pub(crate) fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 4] {
+    pub(crate) fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 5] {
         [
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
@@ -39,6 +40,11 @@ impl Vertex {
                 .location(3)
                 .format(vk::Format::R32G32_SFLOAT)
                 .offset(offset_of!(Vertex, tex_coord) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(4)
+                .format(vk::Format::R32G32B32_UINT)
+                .offset(offset_of!(Vertex, material) as u32),
         ]
     }
 }

@@ -3,6 +3,7 @@ struct VSInput {
     float3 in_normal;
     float4 in_tangent;
     float2 in_tex_coord;
+    uint3 in_material;
 };
 
 struct VSOutput {

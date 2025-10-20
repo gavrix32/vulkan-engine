@@ -32,9 +32,18 @@ impl Device {
         let adapter_extension_name_pointers: Vec<*const c_char> =
             DEVICE_EXTENSIONS.iter().map(|s| s.as_ptr()).collect();
 
+        let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default()
+            .descriptor_indexing(true)
+            .descriptor_binding_sampled_image_update_after_bind(true)
+            .descriptor_binding_partially_bound(true)
+            .descriptor_binding_variable_descriptor_count(true)
+            .runtime_descriptor_array(true);
+
         let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::default()
             .dynamic_rendering(true)
             .synchronization2(true);
+
+        vulkan13_features.p_next = &mut vulkan12_features as *mut _ as *mut std::ffi::c_void;
 
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)

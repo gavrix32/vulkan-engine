@@ -1,7 +1,3 @@
-[[vk::binding(1, 0)]] Sampler2D albedo_texture;
-[[vk::binding(2, 0)]] Sampler2D normal_texture;
-[[vk::binding(3, 0)]] Sampler2D metallic_roughness_texture;
-
 struct UniformBuffer {
     float4x4 model;
     float4x4 view;
@@ -10,6 +6,8 @@ struct UniformBuffer {
     float4 cam_pos;
 };
 ConstantBuffer<UniformBuffer> ubo;
+
+Sampler2D textures[];
 
 static const float PI = 3.14159265;
 static const float EPSILON = 0.00001;
@@ -65,10 +63,15 @@ void main(
     float3 world_tangent,
     float3 world_bitangent,
     float3 world_normal,
+    uint3 material,
 ) {
-    float3 albedo = albedo_texture.Sample(tex_coord).rgb;
+    uint albedo_index = material[0];
+    uint normal_index = material[1];
+    uint metallic_roughness_index = material[2];
+    
+    float3 albedo = textures[albedo_index].Sample(tex_coord).rgb;
 
-    float3 tangent_normal = normal_texture.Sample(tex_coord).rgb;
+    float3 tangent_normal = textures[normal_index].Sample(tex_coord).rgb;
     float3x3 TBN = transpose(float3x3(
         normalize(world_tangent),
         normalize(world_bitangent),
@@ -83,7 +86,7 @@ void main(
         normal = normalize(world_normal);
     }
 
-    float3 metallic_roughness = metallic_roughness_texture.Sample(tex_coord).rgb;
+    float3 metallic_roughness = textures[metallic_roughness_index].Sample(tex_coord).rgb;
     float metallic = metallic_roughness.b;
     float roughness = metallic_roughness.g;
 

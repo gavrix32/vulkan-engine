@@ -3,6 +3,7 @@ struct VSInput {
     float3 in_normal;
     float4 in_tangent;
     float2 in_tex_coord;
+    uint3 in_material;
 };
 
 struct VSOutput {
@@ -12,6 +13,7 @@ struct VSOutput {
     float3 world_tangent;
     float3 world_bitangent;
     float3 world_normal;
+    uint3 material;
 };
 
 struct UniformBuffer {
@@ -36,6 +38,8 @@ VSOutput main(VSInput input) {
     output.world_tangent = normalize(mul(float3x3(ubo.model), input.in_tangent.xyz));
     output.world_normal = normalize(mul(float3x3(ubo.model), input.in_normal));
     output.world_bitangent = normalize(cross(output.world_normal, output.world_tangent) * input.in_tangent.w);
+    
+    output.material = input.in_material;
 
     return output;
 }
