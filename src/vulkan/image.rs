@@ -116,6 +116,40 @@ impl Image {
             bytes,
             image.width(),
             image.height(),
+            vk::Format::R8G8B8A8_SRGB,
+            instance,
+            adapter,
+            device,
+            mipmapping,
+            msaa_samples,
+            mag_filter,
+            min_filter,
+        )
+    }
+
+    pub fn read_rgba32<R: io::Seek + io::BufRead>(
+        buffer: &mut R,
+        instance: &Instance,
+        adapter: &Adapter,
+        device: Arc<Device>,
+        mipmapping: bool,
+        msaa_samples: vk::SampleCountFlags,
+        mag_filter: vk::Filter,
+        min_filter: vk::Filter,
+    ) -> Self {
+        let image = ImageReader::new(buffer)
+            .with_guessed_format()
+            .expect("Failed to guess format")
+            .decode()
+            .expect("Failed to decode image")
+            .to_rgba32f();
+        let bytes = bytemuck::cast_slice(image.as_raw());
+
+        Self::from_bytes(
+            bytes,
+            image.width(),
+            image.height(),
+            vk::Format::R32G32B32A32_SFLOAT,
             instance,
             adapter,
             device,
@@ -130,6 +164,7 @@ impl Image {
         bytes: &[u8],
         width: u32,
         height: u32,
+        format: vk::Format,
         instance: &Instance,
         adapter: &Adapter,
         device: Arc<Device>,
@@ -138,7 +173,14 @@ impl Image {
         mag_filter: vk::Filter,
         min_filter: vk::Filter,
     ) -> Self {
-        let size = (width * height * 4) as vk::DeviceSize;
+        let pixel_size = match format {
+            vk::Format::R8G8B8A8_UNORM | vk::Format::R8G8B8A8_SRGB => 4,
+            vk::Format::R32G32B32A32_SFLOAT => 16,
+            vk::Format::R32G32B32_SFLOAT => 12,
+            _ => panic!("Unsupported format: {:?}", format),
+        };
+        let image_size = (width * height * pixel_size) as vk::DeviceSize;
+
         let mip_levels = if mip_mapping {
             max(width, height).ilog2() + 1
         } else {
@@ -149,7 +191,7 @@ impl Image {
             instance,
             adapter,
             device.clone(),
-            size,
+            image_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         );
@@ -158,12 +200,11 @@ impl Image {
         let data_ptr = staging_buffer.p_data.unwrap();
 
         let mut image_align =
-            unsafe { Align::new(data_ptr, align_of::<u8>() as vk::DeviceSize, size) };
+            unsafe { Align::new(data_ptr, align_of::<u8>() as vk::DeviceSize, image_size) };
         image_align.copy_from_slice(bytes);
 
         staging_buffer.unmap_memory();
 
-        let format = vk::Format::R8G8B8A8_SRGB;
         let layout = vk::ImageLayout::UNDEFINED;
 
         let image_create_info = vk::ImageCreateInfo::default()

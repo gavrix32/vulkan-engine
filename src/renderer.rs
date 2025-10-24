@@ -32,7 +32,9 @@ struct UniformBufferData {
     proj: Mat4,      // 128
     light_pos: Vec4, // 192
     cam_pos: Vec4,   // 208
-                     // 224
+    env_index: u32,  // 224
+    _pad0: [u32; 3], //
+                     // 240
 }
 
 pub struct Renderer {
@@ -82,6 +84,8 @@ pub struct Renderer {
     light_primitives: Vec<loader::PrimitiveInfo>,
 
     timer: Instant,
+
+    env_index: u32,
 }
 
 impl Renderer {
@@ -175,6 +179,7 @@ impl Renderer {
                 image_bytes,
                 image_width,
                 image_height,
+                vk::Format::R8G8B8A8_SRGB,
                 &instance,
                 &adapter,
                 device.clone(),
@@ -186,6 +191,21 @@ impl Renderer {
 
             images.push(image);
         }
+
+        let env_index = images.len() as u32;
+        let env_image = Image::read_rgba32(
+            &mut Cursor::new(include_bytes!(
+                "../resources/textures/modern_evening_street_2k.hdr"
+            )),
+            &instance,
+            &adapter,
+            device.clone(),
+            true,
+            vk::SampleCountFlags::TYPE_1,
+            vk::Filter::NEAREST,
+            vk::Filter::NEAREST,
+        );
+        images.push(env_image);
 
         let placeholder_image = Image::read_rgba8(
             &mut Cursor::new(include_bytes!("../resources/textures/placeholder.png")),
@@ -312,8 +332,7 @@ impl Renderer {
 
         let pbr_pipeline = Pipeline::new(
             device.clone(),
-            Vec::from(include_bytes!("shaders/spirv/vertex.spv")),
-            Vec::from(include_bytes!("shaders/spirv/fragment.spv")),
+            Vec::from(include_bytes!("shaders/spirv/pbr.spv")),
             color_format,
             vk::Format::D32_SFLOAT_S8_UINT,
             &[descriptor.layout],
@@ -322,8 +341,7 @@ impl Renderer {
 
         let light_pipeline = Pipeline::new(
             device.clone(),
-            Vec::from(include_bytes!("shaders/spirv/light_vertex.spv")),
-            Vec::from(include_bytes!("shaders/spirv/light_fragment.spv")),
+            Vec::from(include_bytes!("shaders/spirv/light.spv")),
             color_format,
             vk::Format::D32_SFLOAT_S8_UINT,
             &[light_descriptor.layout],
@@ -394,6 +412,8 @@ impl Renderer {
             light_primitives,
 
             timer: Instant::now(),
+
+            env_index,
         }
     }
 
@@ -534,7 +554,7 @@ impl Renderer {
         )
     }
 
-    fn record_command_buffer(&mut self, image_index: u32) {
+    fn record_command_buffer(&mut self, swapchain_image_index: u32) {
         let viewport = vk::Viewport::default()
             .x(0.0)
             .y(0.0)
@@ -560,7 +580,7 @@ impl Renderer {
 
         Image::transition_layout(
             &self.encoder,
-            self.swapchain.images[image_index as usize],
+            self.swapchain.images[swapchain_image_index as usize],
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             1,
@@ -576,7 +596,7 @@ impl Renderer {
             .image_view(self.swapchain.color_image.view)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .resolve_mode(vk::ResolveModeFlags::AVERAGE)
-            .resolve_image_view(self.swapchain.image_views[image_index as usize])
+            .resolve_image_view(self.swapchain.image_views[swapchain_image_index as usize])
             .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -676,7 +696,7 @@ impl Renderer {
 
         Image::transition_layout(
             &self.encoder,
-            self.swapchain.images[image_index as usize],
+            self.swapchain.images[swapchain_image_index as usize],
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::PRESENT_SRC_KHR,
             1,
@@ -717,6 +737,8 @@ impl Renderer {
             proj,
             light_pos: light_pos_transform * Vec4::new(0.0, 0.0, 0.0, 1.0),
             cam_pos: Vec4::new(pos.x, pos.y, pos.z, 0.0),
+            env_index: self.env_index,
+            _pad0: Default::default(),
         };
 
         let uniform_buffer = if is_light {

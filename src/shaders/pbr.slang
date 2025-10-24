@@ -1,16 +1,46 @@
-struct UniformBuffer {
-    float4x4 model;
-    float4x4 view;
-    float4x4 proj;
-    float4 light_pos;
-    float4 cam_pos;
-};
-ConstantBuffer<UniformBuffer> ubo;
+import common;
 
-Sampler2D textures[];
+[vk::binding(1, 0)] Sampler2D textures[];
 
 static const float PI = 3.14159265;
 static const float EPSILON = 0.00001;
+
+struct VertexInput {
+    float3 in_position;
+    float3 in_normal;
+    float4 in_tangent;
+    float2 in_tex_coord;
+    uint3 in_material;
+};
+
+struct VertexOutput {
+    float4 sv_position : SV_Position;
+    float3 frag_pos;
+    float2 tex_coord;
+    float3 world_tangent;
+    float3 world_bitangent;
+    float3 world_normal;
+    uint3 material;
+};
+
+[shader("vertex")]
+VertexOutput vertex_main(VertexInput input) {
+    VertexOutput output;
+
+    float4x4 MVP = mul(mul(uniforms.proj, uniforms.view), uniforms.model);
+    output.sv_position = mul(MVP, float4(input.in_position, 1.0));
+
+    output.frag_pos = mul(uniforms.model, float4(input.in_position, 1.0)).xyz;
+    output.tex_coord = input.in_tex_coord;
+
+    output.world_tangent = normalize(mul(float3x3(uniforms.model), input.in_tangent.xyz));
+    output.world_normal = normalize(mul(float3x3(uniforms.model), input.in_normal));
+    output.world_bitangent = normalize(cross(output.world_normal, output.world_tangent) * input.in_tangent.w);
+
+    output.material = input.in_material;
+
+    return output;
+}
 
 // x - fragment position
 // N - normal
@@ -55,27 +85,30 @@ float geometry_schlick_GGX(float3 N, float NdotX, float alpha) {
     return numerator / max(denominator, EPSILON);
 }
 
-[shader("fragment")]
-void main(
-    out float4 out_color: SV_Target0,
-    float3 frag_pos,
-    float2 tex_coord,
-    float3 world_tangent,
-    float3 world_bitangent,
-    float3 world_normal,
-    uint3 material,
-) {
-    uint albedo_index = material[0];
-    uint normal_index = material[1];
-    uint metallic_roughness_index = material[2];
-    
-    float3 albedo = textures[albedo_index].Sample(tex_coord).rgb;
+float2 sample_env(float3 dir) {
+    float2 uv;
+    uv.x = atan2(dir.z, dir.x) / (2.0 * PI) + 0.5;
+    uv.y = asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5;
+    return uv;
+}
 
-    float3 tangent_normal = textures[normal_index].Sample(tex_coord).rgb;
+[shader("fragment")]
+void fragment_main(
+    out float4 out_color : SV_Target0,
+    float4 sv_position : SV_Position,
+    VertexOutput input,
+) {
+    uint albedo_index = input.material[0];
+    uint normal_index = input.material[1];
+    uint metallic_roughness_index = input.material[2];
+
+    float3 albedo = textures[albedo_index].Sample(input.tex_coord).rgb;
+
+    float3 tangent_normal = textures[normal_index].Sample(input.tex_coord).rgb;
     float3x3 TBN = transpose(float3x3(
-        normalize(world_tangent),
-        normalize(world_bitangent),
-        normalize(world_normal)
+        normalize(input.world_tangent),
+        normalize(input.world_bitangent),
+        normalize(input.world_normal)
     ));
     float3 normal = normalize(mul(TBN, tangent_normal));
 
@@ -83,18 +116,18 @@ void main(
     if (all(tangent_normal == float3(1.0, 0.0, 0.0)) ||
         all(tangent_normal == float3(0.0, 0.0, 0.0))
     ) {
-        normal = normalize(world_normal);
+        normal = normalize(input.world_normal);
     }
 
-    float3 metallic_roughness = textures[metallic_roughness_index].Sample(tex_coord).rgb;
+    float3 metallic_roughness = textures[metallic_roughness_index].Sample(input.tex_coord).rgb;
     float metallic = metallic_roughness.b;
     float roughness = metallic_roughness.g;
 
     float3 light_color = 8.0;
 
     float3 N = normal;
-    float3 V = normalize(ubo.cam_pos.xyz - frag_pos);
-    float3 L = normalize(ubo.light_pos.xyz - frag_pos);
+    float3 V = normalize(uniforms.cam_pos.xyz - input.frag_pos);
+    float3 L = normalize(uniforms.light_pos.xyz - input.frag_pos);
     float3 H = normalize(V + L);
 
     float3 F0 = 0.04;
@@ -122,11 +155,23 @@ void main(
 
     float3 BRDF = kD * lambert_diffuse + cook_torrance_specular;
 
-    float distance = length(ubo.light_pos.xyz - frag_pos);
+    float distance = length(uniforms.light_pos.xyz - input.frag_pos);
     float attenuation = 1.0 / pow(distance, 2.0);
     float3 Li = light_color * attenuation;
     float3 Le = 0.02 * albedo;
     float3 Lo = Le + BRDF * Li * NdotL;
+
+    // Environment
+    //float3 R = reflect(-V, N);
+    float2 sph_uv = sample_env(V);
+    float3 env = textures[uniforms.env_index].Sample(sph_uv).rgb;
+    float exposure = 1.0;
+    env = float3(1.0) - exp(-env * exposure);
+
+    //float depth = sv_position.a;
+    //if (depth == 0.0) {
+    //    Lo = env;
+    //}
 
     out_color = float4(Lo, 1.0);
 }

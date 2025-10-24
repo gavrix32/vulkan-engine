@@ -14,32 +14,24 @@ pub struct Pipeline {
 impl Pipeline {
     pub fn new(
         device: Arc<Device>,
-        vertex_shader_bytes: Vec<u8>,
-        fragment_shader_bytes: Vec<u8>,
+        shader_bytes: Vec<u8>,
         color_format: vk::Format,
         depth_format: vk::Format,
         descriptor_set_layouts: &[vk::DescriptorSetLayout],
         msaa_samples: vk::SampleCountFlags,
     ) -> Self {
-        let vertex_shader_code =
-            ash::util::read_spv(&mut Cursor::new(vertex_shader_bytes)).unwrap();
+        let shader_code = ash::util::read_spv(&mut Cursor::new(shader_bytes)).unwrap();
 
-        let fragment_shader_code =
-            ash::util::read_spv(&mut Cursor::new(fragment_shader_bytes)).unwrap();
-
-        let vertex_shader_module =
-            create_shader_module(device.clone(), vertex_shader_code.as_slice());
-        let fragment_shader_module =
-            create_shader_module(device.clone(), fragment_shader_code.as_slice());
+        let shader_module = create_shader_module(device.clone(), shader_code.as_slice());
 
         let vertex_shader_stage_info = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
-            .module(vertex_shader_module)
-            .name(c"main");
+            .module(shader_module)
+            .name(c"vertex_main");
         let fragment_shader_stage_info = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::FRAGMENT)
-            .module(fragment_shader_module)
-            .name(c"main");
+            .module(shader_module)
+            .name(c"fragment_main");
 
         let shader_stage_create_infos = [vertex_shader_stage_info, fragment_shader_stage_info];
 
@@ -125,12 +117,7 @@ impl Pipeline {
         ));
 
         unsafe {
-            device
-                .ash_device
-                .destroy_shader_module(vertex_shader_module, None);
-            device
-                .ash_device
-                .destroy_shader_module(fragment_shader_module, None);
+            device.ash_device.destroy_shader_module(shader_module, None);
         }
 
         Self {

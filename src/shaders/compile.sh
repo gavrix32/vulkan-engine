@@ -3,18 +3,23 @@
 SHADER_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="$SHADER_DIR/spirv"
 
-if [[ "$SHADER_DIR/vertex.slang" -ot "$OUTPUT_DIR/vertex.spv" && \
-      "$SHADER_DIR/fragment.slang" -ot "$OUTPUT_DIR/fragment.spv" ]]; then
-    if [[ "$SHADER_DIR/light_vertex.slang" -ot "$OUTPUT_DIR/light_vertex.spv" && \
-          "$SHADER_DIR/light_fragment.slang" -ot "$OUTPUT_DIR/light_fragment.spv" ]]; then
-        exit 0
+mkdir -p "$OUTPUT_DIR"
+
+echo "Compiling shaders..."
+
+for SHADER in pbr light; do
+    SRC="$SHADER_DIR/$SHADER.slang"
+    DST="$OUTPUT_DIR/$SHADER.spv"
+
+    if [[ ! -f "$DST" || "$SRC" -nt "$DST" ]]; then
+        echo "- $SHADER"
+        slangc -I "$SHADER_DIR" "$SRC" -target spirv -profile spirv_1_4 -o "$DST"
+
+        if [[ $? -ne 0 ]]; then
+            echo "Failed to compile $SHADER"
+            exit 1
+        fi
     fi
-fi
+done
 
-echo "Compilation shaders..."
-
-slangc "$SHADER_DIR/vertex.slang" -target spirv -profile spirv_1_4 -o "$OUTPUT_DIR/vertex.spv"
-slangc "$SHADER_DIR/fragment.slang" -target spirv -profile spirv_1_4 -o "$OUTPUT_DIR/fragment.spv"
-
-slangc "$SHADER_DIR/light_vertex.slang" -target spirv -profile spirv_1_4 -o "$OUTPUT_DIR/light_vertex.spv"
-slangc "$SHADER_DIR/light_fragment.slang" -target spirv -profile spirv_1_4 -o "$OUTPUT_DIR/light_fragment.spv"
+echo "Done"
