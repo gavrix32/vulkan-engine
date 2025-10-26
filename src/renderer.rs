@@ -1,7 +1,7 @@
 use crate::camera::Camera;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
-use crate::vulkan::descriptor::Descriptor;
+use crate::vulkan::descriptor::{DescriptorPool, DescriptorSetLayout, DescriptorWriter};
 use crate::vulkan::device::Device;
 use crate::vulkan::encoder::Encoder;
 use crate::vulkan::image::Image;
@@ -55,14 +55,17 @@ pub struct Renderer {
 
     encoder: Encoder,
 
+    blit_pipeline: Pipeline,
     light_pipeline: Pipeline,
     pbr_pipeline: Pipeline,
 
-    descriptor_sets: Vec<vk::DescriptorSet>,
-    light_descriptor_sets: Vec<vk::DescriptorSet>,
+    descriptor_pools: Vec<DescriptorPool>,
 
-    _descriptor: Descriptor,
-    _light_descriptor: Descriptor,
+    pbr_descriptor_layout: DescriptorSetLayout,
+    light_descriptor_layout: DescriptorSetLayout,
+
+    pbr_descriptor_sets: Vec<vk::DescriptorSet>,
+    light_descriptor_sets: Vec<vk::DescriptorSet>,
 
     swapchain: Swapchain,
     device: Arc<Device>,
@@ -283,50 +286,86 @@ impl Renderer {
 
         let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, device.clone());
 
-        let uniform_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT);
+        let pbr_descriptor_layout = DescriptorSetLayout::builder(device.clone())
+            .binding(
+                0,
+                vk::DescriptorType::UNIFORM_BUFFER,
+                1,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                1,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                images.len() as u32,
+                vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                    | vk::DescriptorBindingFlags::PARTIALLY_BOUND
+                    | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT,
+            )
+            .build();
 
-        let texture_layout_binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(1)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(images.len() as u32)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let light_descriptor_layout = DescriptorSetLayout::builder(device.clone())
+            .binding(
+                0,
+                vk::DescriptorType::UNIFORM_BUFFER,
+                1,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .build();
 
-        let bindings = [uniform_layout_binding, texture_layout_binding];
-
-        let binding_flags = [
-            vk::DescriptorBindingFlags::empty(),
-            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
-                | vk::DescriptorBindingFlags::PARTIALLY_BOUND
-                | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT,
-        ];
-
-        let descriptor_pool_sizes = [
+        let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(MAX_FRAMES_IN_FLIGHT as u32),
+                .descriptor_count(2),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(images.len() as u32),
         ];
 
-        let descriptor = Descriptor::new(
-            device.clone(),
-            &bindings,
-            &binding_flags,
-            &descriptor_pool_sizes,
-            &[images.len() as u32],
-        );
-        let light_descriptor = Descriptor::new(
-            device.clone(),
-            &bindings,
-            &binding_flags,
-            &descriptor_pool_sizes,
-            &[images.len() as u32],
-        );
+        let mut descriptor_pools = Vec::new();
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            descriptor_pools.push(DescriptorPool::new(device.clone(), 2, &pool_sizes));
+        }
+
+        let mut pbr_descriptor_sets = Vec::new();
+        for frame in 0..MAX_FRAMES_IN_FLIGHT {
+            let pool = &descriptor_pools[frame];
+            let set = pool.allocate(&pbr_descriptor_layout, images.len() as u32);
+
+            DescriptorWriter::default()
+                .buffer(
+                    0,
+                    vk::DescriptorType::UNIFORM_BUFFER,
+                    &uniform_buffers[0][frame],
+                )
+                .images(
+                    1,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &images,
+                )
+                .update(device.clone(), set);
+
+            pbr_descriptor_sets.push(set);
+        }
+
+        let mut light_descriptor_sets = Vec::new();
+        for frame in 0..MAX_FRAMES_IN_FLIGHT {
+            let pool = &descriptor_pools[frame];
+            let set = pool.allocate(&light_descriptor_layout, 0);
+
+            DescriptorWriter::default()
+                .buffer(
+                    0,
+                    vk::DescriptorType::UNIFORM_BUFFER,
+                    &uniform_buffers[1][frame],
+                )
+                .update(device.clone(), set);
+
+            light_descriptor_sets.push(set);
+        }
 
         let color_format = Swapchain::get_format(&adapter, &surface);
 
@@ -335,7 +374,7 @@ impl Renderer {
             Vec::from(include_bytes!("shaders/spirv/pbr.spv")),
             color_format,
             vk::Format::D32_SFLOAT_S8_UINT,
-            &[descriptor.layout],
+            &[pbr_descriptor_layout.vk_layout],
             msaa_samples,
         );
 
@@ -344,25 +383,18 @@ impl Renderer {
             Vec::from(include_bytes!("shaders/spirv/light.spv")),
             color_format,
             vk::Format::D32_SFLOAT_S8_UINT,
-            &[light_descriptor.layout],
+            &[light_descriptor_layout.vk_layout],
             msaa_samples,
         );
 
-        let mut descriptor_sets = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        for frame in 0..MAX_FRAMES_IN_FLIGHT {
-            Self::create_bindless_descriptor_set(&descriptor, &uniform_buffers[0][frame], &images);
-            descriptor_sets.push(descriptor.set);
-        }
-
-        let mut light_descriptor_sets = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        for frame in 0..MAX_FRAMES_IN_FLIGHT {
-            Self::create_bindless_descriptor_set(
-                &light_descriptor,
-                &uniform_buffers[1][frame],
-                &images,
-            );
-            light_descriptor_sets.push(light_descriptor.set);
-        }
+        let blit_pipeline = Pipeline::new(
+            device.clone(),
+            Vec::from(include_bytes!("shaders/spirv/light.spv")),
+            color_format,
+            vk::Format::D32_SFLOAT_S8_UINT,
+            &[light_descriptor_layout.vk_layout], // todo
+            msaa_samples,
+        );
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             Self::create_sync_objects(device.clone(), swapchain.images.len());
@@ -374,14 +406,17 @@ impl Renderer {
             surface,
             instance,
 
-            _descriptor: descriptor,
-            _light_descriptor: light_descriptor,
+            descriptor_pools,
 
-            descriptor_sets,
+            pbr_descriptor_layout,
+            light_descriptor_layout,
+
+            pbr_descriptor_sets,
             light_descriptor_sets,
 
             pbr_pipeline,
             light_pipeline,
+            blit_pipeline,
 
             encoder,
 
@@ -486,47 +521,6 @@ impl Renderer {
         }
 
         uniform_buffers
-    }
-
-    fn create_bindless_descriptor_set(
-        descriptor: &Descriptor,
-        uniform_buffer: &Buffer,
-        images: &[Image],
-    ) {
-        let set = descriptor.set;
-
-        let ubo_infos = [vk::DescriptorBufferInfo::default()
-            .buffer(uniform_buffer.vk_buffer)
-            .offset(0)
-            .range(vk::WHOLE_SIZE)];
-        let write_ubo = vk::WriteDescriptorSet::default()
-            .dst_set(set)
-            .dst_binding(0)
-            .dst_array_element(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .buffer_info(&ubo_infos);
-
-        let mut texture_infos = Vec::with_capacity(images.len());
-        for image in images {
-            texture_infos.push(
-                vk::DescriptorImageInfo::default()
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image_view(image.view)
-                    .sampler(image.sampler.unwrap()),
-            );
-        }
-        let write_textures = vk::WriteDescriptorSet::default()
-            .dst_set(set)
-            .dst_binding(1)
-            .dst_array_element(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(images.len() as u32)
-            .image_info(&texture_infos);
-
-        let descriptor_writes = [write_ubo, write_textures];
-
-        descriptor.update(&descriptor_writes);
     }
 
     fn create_sync_objects(
@@ -655,7 +649,7 @@ impl Renderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pbr_pipeline.layout,
                 0,
-                &[self.descriptor_sets[self.frame_in_flight]],
+                &[self.pbr_descriptor_sets[self.frame_in_flight]],
                 &[],
             );
 
