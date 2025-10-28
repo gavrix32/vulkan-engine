@@ -1,4 +1,4 @@
-use crate::vulkan::vertex::Vertex;
+use crate::vertex::Vertex;
 use glam::Mat4;
 use gltf::{Node, buffer};
 use log::info;

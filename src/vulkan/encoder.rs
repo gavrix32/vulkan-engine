@@ -171,6 +171,26 @@ impl Encoder {
         }
     }
 
+    pub fn cmd_draw(
+        &self,
+        vertex_count: u32,
+        instance_count: u32,
+        first_vertex: u32,
+        first_instance: u32,
+    ) {
+        let cmd = self.command_buffers[self.command_buffer_index];
+
+        unsafe {
+            self.device.ash_device.cmd_draw(
+                cmd,
+                vertex_count,
+                instance_count,
+                first_vertex,
+                first_instance,
+            );
+        }
+    }
+
     pub fn cmd_pipeline_barrier2(&self, dependency_info: &vk::DependencyInfo) {
         let cmd = self.command_buffers[self.command_buffer_index];
 

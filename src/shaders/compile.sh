@@ -7,7 +7,7 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "Compiling shaders..."
 
-for SHADER in pbr light; do
+for SHADER in pbr light blit; do
     SRC="$SHADER_DIR/$SHADER.slang"
     DST="$OUTPUT_DIR/$SHADER.spv"
 

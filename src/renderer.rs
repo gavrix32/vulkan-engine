@@ -1,4 +1,5 @@
 use crate::camera::Camera;
+use crate::vertex::Vertex;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
 use crate::vulkan::descriptor::{DescriptorPool, DescriptorSetLayout, DescriptorWriter};
@@ -6,10 +7,9 @@ use crate::vulkan::device::Device;
 use crate::vulkan::encoder::Encoder;
 use crate::vulkan::image::Image;
 use crate::vulkan::instance::Instance;
-use crate::vulkan::pipeline::Pipeline;
+use crate::vulkan::pipeline::{Pipeline, PipelineBuilder};
 use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
-use crate::vulkan::vertex::Vertex;
 use crate::vulkan::{sync, util};
 use crate::{loader, unsafe_vk_try};
 use ash::util::Align;
@@ -59,13 +59,15 @@ pub struct Renderer {
     light_pipeline: Pipeline,
     pbr_pipeline: Pipeline,
 
-    descriptor_pools: Vec<DescriptorPool>,
+    _descriptor_pools: Vec<DescriptorPool>,
 
-    pbr_descriptor_layout: DescriptorSetLayout,
-    light_descriptor_layout: DescriptorSetLayout,
+    _pbr_descriptor_layout: DescriptorSetLayout,
+    _light_descriptor_layout: DescriptorSetLayout,
+    _blit_descriptor_layout: DescriptorSetLayout,
 
     pbr_descriptor_sets: Vec<vk::DescriptorSet>,
     light_descriptor_sets: Vec<vk::DescriptorSet>,
+    blit_descriptor_sets: Vec<vk::DescriptorSet>,
 
     swapchain: Swapchain,
     device: Arc<Device>,
@@ -208,7 +210,7 @@ impl Renderer {
             vk::Filter::NEAREST,
             vk::Filter::NEAREST,
         );
-        images.push(env_image);
+        // images.push(env_image);
 
         let placeholder_image = Image::read_rgba8(
             &mut Cursor::new(include_bytes!("../resources/textures/placeholder.png")),
@@ -315,18 +317,28 @@ impl Renderer {
             )
             .build();
 
+        let blit_descriptor_layout = DescriptorSetLayout::builder(device.clone())
+            .binding(
+                0,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                1,
+                vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .build();
+
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(2),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(images.len() as u32),
+                .descriptor_count(images.len() as u32 + 1),
         ];
 
         let mut descriptor_pools = Vec::new();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            descriptor_pools.push(DescriptorPool::new(device.clone(), 2, &pool_sizes));
+            descriptor_pools.push(DescriptorPool::new(device.clone(), 3, &pool_sizes));
         }
 
         let mut pbr_descriptor_sets = Vec::new();
@@ -367,34 +379,90 @@ impl Renderer {
             light_descriptor_sets.push(set);
         }
 
+        let mut blit_descriptor_sets = Vec::new();
+        for frame in 0..MAX_FRAMES_IN_FLIGHT {
+            let pool = &descriptor_pools[frame];
+            let set = pool.allocate(&blit_descriptor_layout, 0);
+
+            DescriptorWriter::default()
+                .image(
+                    0,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &env_image,
+                )
+                .update(device.clone(), set);
+
+            blit_descriptor_sets.push(set);
+        }
+
         let color_format = Swapchain::get_format(&adapter, &surface);
 
-        let pbr_pipeline = Pipeline::new(
-            device.clone(),
-            Vec::from(include_bytes!("shaders/spirv/pbr.spv")),
-            color_format,
-            vk::Format::D32_SFLOAT_S8_UINT,
-            &[pbr_descriptor_layout.vk_layout],
-            msaa_samples,
-        );
+        let binding_descriptions = [Vertex::get_binding_description()];
+        let attribute_descriptions = Vertex::get_attribute_descriptions();
 
-        let light_pipeline = Pipeline::new(
-            device.clone(),
-            Vec::from(include_bytes!("shaders/spirv/light.spv")),
-            color_format,
-            vk::Format::D32_SFLOAT_S8_UINT,
-            &[light_descriptor_layout.vk_layout],
-            msaa_samples,
-        );
+        let pipeline_builder = PipelineBuilder::default()
+            .vertex_input(&binding_descriptions, &attribute_descriptions)
+            .input_assembly(vk::PrimitiveTopology::TRIANGLE_LIST, false)
+            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+            .viewport_state(1, 1)
+            .rasterization_state(
+                false,
+                false,
+                vk::PolygonMode::FILL,
+                1.0,
+                vk::CullModeFlags::BACK,
+                vk::FrontFace::COUNTER_CLOCKWISE,
+                false,
+            )
+            .multisample_state(msaa_samples)
+            .color_blend_state(vk::ColorComponentFlags::RGBA)
+            .depth_stencil_state(true, true, vk::CompareOp::LESS)
+            .formats(color_format, vk::Format::D32_SFLOAT_S8_UINT);
 
-        let blit_pipeline = Pipeline::new(
-            device.clone(),
-            Vec::from(include_bytes!("shaders/spirv/light.spv")),
-            color_format,
-            vk::Format::D32_SFLOAT_S8_UINT,
-            &[light_descriptor_layout.vk_layout], // todo
-            msaa_samples,
-        );
+        let pbr_pipeline = pipeline_builder
+            .clone()
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/pbr.spv")),
+                vk::ShaderStageFlags::VERTEX,
+                c"vertex_main",
+            )
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/pbr.spv")),
+                vk::ShaderStageFlags::FRAGMENT,
+                c"fragment_main",
+            )
+            .descriptor_set_layouts(&[pbr_descriptor_layout.vk_layout])
+            .build(device.clone());
+
+        let light_pipeline = pipeline_builder
+            .clone()
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/light.spv")),
+                vk::ShaderStageFlags::VERTEX,
+                c"vertex_main",
+            )
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/light.spv")),
+                vk::ShaderStageFlags::FRAGMENT,
+                c"fragment_main",
+            )
+            .descriptor_set_layouts(&[light_descriptor_layout.vk_layout])
+            .build(device.clone());
+
+        let blit_pipeline = pipeline_builder
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/blit.spv")),
+                vk::ShaderStageFlags::VERTEX,
+                c"vertex_main",
+            )
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/blit.spv")),
+                vk::ShaderStageFlags::FRAGMENT,
+                c"fragment_main",
+            )
+            .descriptor_set_layouts(&[blit_descriptor_layout.vk_layout])
+            .build(device.clone());
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             Self::create_sync_objects(device.clone(), swapchain.images.len());
@@ -406,13 +474,15 @@ impl Renderer {
             surface,
             instance,
 
-            descriptor_pools,
+            _descriptor_pools: descriptor_pools,
 
-            pbr_descriptor_layout,
-            light_descriptor_layout,
+            _pbr_descriptor_layout: pbr_descriptor_layout,
+            _light_descriptor_layout: light_descriptor_layout,
+            _blit_descriptor_layout: blit_descriptor_layout,
 
             pbr_descriptor_sets,
             light_descriptor_sets,
+            blit_descriptor_sets,
 
             pbr_pipeline,
             light_pipeline,
@@ -627,6 +697,22 @@ impl Renderer {
 
         self.encoder.cmd_set_viewport(0, &viewports);
         self.encoder.cmd_set_scissor(0, &scissors);
+
+        // Blit
+        self.encoder.cmd_bind_pipeline(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.blit_pipeline.vk_pipeline,
+        );
+
+        self.encoder.cmd_bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.blit_pipeline.layout,
+            0,
+            &[self.blit_descriptor_sets[self.frame_in_flight]],
+            &[],
+        );
+
+        self.encoder.cmd_draw(3, 1, 0, 0);
 
         // PBR
         self.encoder.cmd_bind_pipeline(

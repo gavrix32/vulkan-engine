@@ -2,23 +2,23 @@ use ash::vk;
 use std::mem::offset_of;
 
 #[derive(Copy, Clone)]
-pub(crate) struct Vertex {
-    pub(crate) position: [f32; 3],
-    pub(crate) normal: [f32; 3],
-    pub(crate) tangent: [f32; 4],
-    pub(crate) tex_coord: [f32; 2],
-    pub(crate) material: [u32; 3],
+pub struct Vertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub tangent: [f32; 4],
+    pub tex_coord: [f32; 2],
+    pub material: [u32; 3],
 }
 
 impl Vertex {
-    pub(crate) fn get_binding_description() -> vk::VertexInputBindingDescription {
+    pub fn get_binding_description() -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription::default()
             .binding(0)
             .stride(size_of::<Vertex>() as u32)
             .input_rate(vk::VertexInputRate::VERTEX)
     }
 
-    pub(crate) fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 5] {
+    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 5] {
         [
             vk::VertexInputAttributeDescription::default()
                 .binding(0)
