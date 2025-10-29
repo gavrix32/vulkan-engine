@@ -50,10 +50,10 @@ void fragment_main(
     VertexOutput input,
     out float4 out_color : SV_Target0
 ) {
-    // float2 uv = input.sv_position.xy / push_constants.resolution; // [0; 1]
-    // uv = uv * 2.0 - 1.0;                                          // [-1; 1]
+    float2 uv = input.sv_position.xy / push_constants.resolution; // [0; 1]
+    uv = uv * 2.0 - 1.0;                                          // [-1; 1]
 
-    float4 world_dir = mul(push_constants.inv_view_proj, float4(input.clip_dir, 1.0, 1.0));
+    float4 world_dir = mul(push_constants.inv_view_proj, float4(uv, 1.0, 1.0));
     float3 dir = normalize(world_dir.xyz / world_dir.w);
 
     float2 sph_uv = sample_env(dir);

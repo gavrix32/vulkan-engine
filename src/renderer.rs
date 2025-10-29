@@ -62,9 +62,6 @@ pub struct Renderer {
     index_buffer: Buffer,
     vertex_buffer: Buffer,
 
-    _images: Vec<Image>,
-    _env_image: Image,
-
     encoder: Encoder,
 
     blit_pipeline: Pipeline,
@@ -82,6 +79,8 @@ pub struct Renderer {
     blit_descriptor_sets: Vec<vk::DescriptorSet>,
 
     push_constant_data: PushConstantData,
+
+    _images: Vec<Image>,
 
     swapchain: Swapchain,
     device: Arc<Device>,
@@ -214,17 +213,17 @@ impl Renderer {
         let env_index = images.len() as u32;
         let env_image = Image::read_rgba32(
             &mut Cursor::new(include_bytes!(
-                "../resources/textures/modern_evening_street_2k.hdr"
+                "../resources/textures/the_sky_is_on_fire_4k.hdr"
             )),
             &instance,
             &adapter,
             device.clone(),
             true,
             vk::SampleCountFlags::TYPE_1,
-            vk::Filter::NEAREST,
-            vk::Filter::NEAREST,
+            vk::Filter::LINEAR,
+            vk::Filter::LINEAR,
         );
-        // images.push(env_image);
+        images.push(env_image);
 
         let placeholder_image = Image::read_rgba8(
             &mut Cursor::new(include_bytes!("../resources/textures/placeholder.png")),
@@ -409,7 +408,7 @@ impl Renderer {
                     0,
                     vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    &env_image,
+                    &images[env_index as usize],
                 )
                 .update(device.clone(), set);
 
@@ -439,6 +438,11 @@ impl Renderer {
             .color_blend_state(vk::ColorComponentFlags::RGBA)
             .formats(color_format, vk::Format::D32_SFLOAT_S8_UINT);
 
+        let push_constant_range = vk::PushConstantRange::default()
+            .offset(0)
+            .size(size_of::<PushConstantData>() as u32)
+            .stage_flags(vk::ShaderStageFlags::ALL);
+
         let pbr_pipeline = pipeline_builder
             .clone()
             .shader_stage(
@@ -453,6 +457,7 @@ impl Renderer {
             )
             .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .descriptor_set_layouts(&[pbr_descriptor_layout.vk_layout])
+            .push_constant_ranges(&[push_constant_range])
             .build(device.clone());
 
         let light_pipeline = pipeline_builder
@@ -470,11 +475,6 @@ impl Renderer {
             .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .descriptor_set_layouts(&[light_descriptor_layout.vk_layout])
             .build(device.clone());
-
-        let push_constant_range = vk::PushConstantRange::default()
-            .offset(0)
-            .size(size_of::<PushConstantData>() as u32)
-            .stage_flags(vk::ShaderStageFlags::ALL);
 
         let blit_pipeline = pipeline_builder
             .shader_stage(
@@ -520,7 +520,6 @@ impl Renderer {
             encoder,
 
             _images: images,
-            _env_image: env_image,
 
             light_vertex_buffer,
             light_index_buffer,
@@ -776,6 +775,13 @@ impl Renderer {
                 0,
                 &[self.pbr_descriptor_sets[self.frame_in_flight]],
                 &[],
+            );
+
+            self.encoder.cmd_push_constants(
+                self.blit_pipeline.layout,
+                vk::ShaderStageFlags::ALL,
+                0,
+                bytemuck::bytes_of(&[self.push_constant_data]),
             );
 
             self.encoder

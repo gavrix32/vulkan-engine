@@ -2,8 +2,15 @@ import common;
 
 [vk::binding(1, 0)] Sampler2D textures[];
 
+struct PushConstants {
+    float2 resolution;
+    float4x4 inv_view_proj;
+};
+[vk::push_constant] ConstantBuffer<PushConstants> push_constants;
+
 static const float PI = 3.14159265;
 static const float EPSILON = 0.00001;
+static const float MAX_REFLECTION_LOD = 4.0;
 
 struct VertexInput {
     float3 in_position;
@@ -88,7 +95,7 @@ float geometry_schlick_GGX(float3 N, float NdotX, float alpha) {
 float2 sample_env(float3 dir) {
     float2 uv;
     uv.x = atan2(dir.z, dir.x) / (2.0 * PI) + 0.5;
-    uv.y = asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5;
+    uv.y = acos(dir.y) / PI;
     return uv;
 }
 
@@ -153,25 +160,47 @@ void fragment_main(
     float3 kS = F;
     float3 kD = (1.0 - kS) * (1.0 - metallic);
 
-    float3 BRDF = kD * lambert_diffuse + cook_torrance_specular;
+    // Environment
+
+    float2 uv = input.sv_position.xy / push_constants.resolution; // [0; 1]
+    uv = uv * 2.0 - 1.0;                                          // [-1; 1]
+
+    float3 R = normalize(reflect(-V, N));
+
+    // float4 world_dir = mul(push_constants.inv_view_proj, float4(uv, 1.0, 1.0));
+    // float3 dir = normalize(world_dir.xyz / world_dir.w);
+
+    float exposure = 1.0;
+    float gamma = 2.2;
+
+    float2 sph_uv = sample_env(R);
+    float3 irradiance = textures[uniforms.env_index].SampleLevel(sph_uv, 8.0).rgb;
+
+    irradiance = float3(1.0) - exp(-irradiance * exposure);
+
+    float3 diffuse_IBL = kD * albedo * irradiance;
+
+    float lod = roughness * MAX_REFLECTION_LOD;
+
+    float3 prefiltered_color = textures[uniforms.env_index].SampleLevel(sample_env(R), lod).rgb;
+
+    prefiltered_color = float3(1.0) - exp(-prefiltered_color * exposure);
+
+    float3 specular_IBL = prefiltered_color * F0;
+
+    float3 BRDF = kD * lambert_diffuse * irradiance + cook_torrance_specular;
 
     float distance = length(uniforms.light_pos.xyz - input.frag_pos);
     float attenuation = 1.0 / pow(distance, 2.0);
     float3 Li = light_color * attenuation;
     float3 Le = 0.02 * albedo;
-    float3 Lo = Le + BRDF * Li * NdotL;
 
-    // Environment
-    //float3 R = reflect(-V, N);
-    //float2 sph_uv = sample_env(V);
-    //float3 env = textures[uniforms.env_index].Sample(sph_uv).rgb;
-    //float exposure = 1.0;
-    //env = float3(1.0) - exp(-env * exposure);
+    float3 L_direct = BRDF * Li * NdotL;
+    float3 L_indirect = diffuse_IBL + specular_IBL;
 
-    //float depth = sv_position.a;
-    //if (depth == 0.0) {
-    //    Lo = env;
-    //}
+    float3 Lo = Le + L_direct + L_indirect;
+
+    // Lo = pow(Lo, float3(1.0 / gamma));
 
     out_color = float4(Lo, 1.0);
 }
