@@ -14,6 +14,7 @@ use crate::vulkan::{sync, util};
 use crate::{loader, unsafe_vk_try};
 use ash::util::Align;
 use ash::vk;
+use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use log::{info, warn};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -37,6 +38,16 @@ struct UniformBufferData {
                      // 240
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PushConstantData {
+    // std140 base alignment 16 bytes
+    resolution: [f32; 2], // 0
+    _pad0: [f32; 2],      //
+    inv_view_proj: [[f32; 4]; 4], // 16 bytes
+                          // 80 bytes
+}
+
 pub struct Renderer {
     in_flight_fences: Vec<sync::Fence>,
 
@@ -52,6 +63,7 @@ pub struct Renderer {
     vertex_buffer: Buffer,
 
     _images: Vec<Image>,
+    _env_image: Image,
 
     encoder: Encoder,
 
@@ -68,6 +80,8 @@ pub struct Renderer {
     pbr_descriptor_sets: Vec<vk::DescriptorSet>,
     light_descriptor_sets: Vec<vk::DescriptorSet>,
     blit_descriptor_sets: Vec<vk::DescriptorSet>,
+
+    push_constant_data: PushConstantData,
 
     swapchain: Swapchain,
     device: Arc<Device>,
@@ -327,6 +341,12 @@ impl Renderer {
             )
             .build();
 
+        let push_constant_data = PushConstantData {
+            resolution: [width as f32, height as f32],
+            _pad0: [0.0; 2],
+            inv_view_proj: [[0.0; 4]; 4],
+        };
+
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
@@ -417,7 +437,6 @@ impl Renderer {
             )
             .multisample_state(msaa_samples)
             .color_blend_state(vk::ColorComponentFlags::RGBA)
-            .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .formats(color_format, vk::Format::D32_SFLOAT_S8_UINT);
 
         let pbr_pipeline = pipeline_builder
@@ -432,6 +451,7 @@ impl Renderer {
                 vk::ShaderStageFlags::FRAGMENT,
                 c"fragment_main",
             )
+            .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .descriptor_set_layouts(&[pbr_descriptor_layout.vk_layout])
             .build(device.clone());
 
@@ -447,8 +467,14 @@ impl Renderer {
                 vk::ShaderStageFlags::FRAGMENT,
                 c"fragment_main",
             )
+            .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .descriptor_set_layouts(&[light_descriptor_layout.vk_layout])
             .build(device.clone());
+
+        let push_constant_range = vk::PushConstantRange::default()
+            .offset(0)
+            .size(size_of::<PushConstantData>() as u32)
+            .stage_flags(vk::ShaderStageFlags::ALL);
 
         let blit_pipeline = pipeline_builder
             .shader_stage(
@@ -462,6 +488,7 @@ impl Renderer {
                 c"fragment_main",
             )
             .descriptor_set_layouts(&[blit_descriptor_layout.vk_layout])
+            .push_constant_ranges(&[push_constant_range])
             .build(device.clone());
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
@@ -484,6 +511,8 @@ impl Renderer {
             light_descriptor_sets,
             blit_descriptor_sets,
 
+            push_constant_data,
+
             pbr_pipeline,
             light_pipeline,
             blit_pipeline,
@@ -491,6 +520,7 @@ impl Renderer {
             encoder,
 
             _images: images,
+            _env_image: env_image,
 
             light_vertex_buffer,
             light_index_buffer,
@@ -712,6 +742,15 @@ impl Renderer {
             &[],
         );
 
+        self.update_push_constants();
+
+        self.encoder.cmd_push_constants(
+            self.blit_pipeline.layout,
+            vk::ShaderStageFlags::ALL,
+            0,
+            bytemuck::bytes_of(&[self.push_constant_data]),
+        );
+
         self.encoder.cmd_draw(3, 1, 0, 0);
 
         // PBR
@@ -835,6 +874,23 @@ impl Renderer {
             )
         };
         uniform_align.copy_from_slice(&[uniform_buffer_data]);
+    }
+
+    fn update_push_constants(&mut self) {
+        let mut proj = Mat4::perspective_rh(
+            70.0_f32.to_radians(),
+            self.width as f32 / self.height as f32,
+            0.01,
+            1000.0,
+        );
+        proj.y_axis *= -1.0;
+
+        let view = Mat4::from_quat(self.camera.quat.conjugate());
+
+        let inv_view_proj = (proj * view).inverse();
+
+        self.push_constant_data.resolution = [self.width as f32, self.height as f32];
+        self.push_constant_data.inv_view_proj = inv_view_proj.to_cols_array_2d();
     }
 
     pub fn draw_frame(&mut self) {

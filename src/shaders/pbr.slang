@@ -163,10 +163,10 @@ void fragment_main(
 
     // Environment
     //float3 R = reflect(-V, N);
-    float2 sph_uv = sample_env(V);
-    float3 env = textures[uniforms.env_index].Sample(sph_uv).rgb;
-    float exposure = 1.0;
-    env = float3(1.0) - exp(-env * exposure);
+    //float2 sph_uv = sample_env(V);
+    //float3 env = textures[uniforms.env_index].Sample(sph_uv).rgb;
+    //float exposure = 1.0;
+    //env = float3(1.0) - exp(-env * exposure);
 
     //float depth = sv_position.a;
     //if (depth == 0.0) {

@@ -149,6 +149,22 @@ impl Encoder {
         }
     }
 
+    pub fn cmd_push_constants(
+        &self,
+        layout: vk::PipelineLayout,
+        stage_flags: vk::ShaderStageFlags,
+        offset: u32,
+        constants: &[u8],
+    ) {
+        let cmd = self.command_buffers[self.command_buffer_index];
+
+        unsafe {
+            self.device
+                .ash_device
+                .cmd_push_constants(cmd, layout, stage_flags, offset, constants);
+        }
+    }
+
     pub fn cmd_draw_indexed(
         &self,
         index_count: u32,

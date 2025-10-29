@@ -8,7 +8,7 @@ pub struct Camera {
 
 impl Camera {
     pub fn view(&self) -> Mat4 {
-        Mat4::from_rotation_translation(self.quat, self.pos).inverse()
+        Mat4::from_quat(self.quat.conjugate()) * Mat4::from_translation(-self.pos)
     }
 
     pub fn move_local(&mut self, x: f32, y: f32, z: f32) {

@@ -13,7 +13,7 @@ for SHADER in pbr light blit; do
 
     if [[ ! -f "$DST" || "$SRC" -nt "$DST" ]]; then
         echo "- $SHADER"
-        slangc -I "$SHADER_DIR" "$SRC" -target spirv -profile spirv_1_4 -o "$DST"
+        slangc -I "$SHADER_DIR" "$SRC" -target spirv -profile spirv_1_4 -matrix-layout-column-major -o "$DST"
 
         if [[ $? -ne 0 ]]; then
             echo "Failed to compile $SHADER"

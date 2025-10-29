@@ -23,6 +23,8 @@ pub struct PipelineBuilder<'a> {
     color_write_mask: vk::ColorComponentFlags,
     depth_stencil_state: vk::PipelineDepthStencilStateCreateInfo<'a>,
     descriptor_set_layouts: &'a [vk::DescriptorSetLayout],
+    push_constant_ranges: &'a [vk::PushConstantRange],
+    pipeline_layout_info: vk::PipelineLayoutCreateInfo<'a>,
     color_format: vk::Format,
     depth_format: vk::Format,
 }
@@ -105,8 +107,27 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
-    pub fn descriptor_set_layouts(mut self, descriptor_set_layouts: &'a [vk::DescriptorSetLayout]) -> Self {
+    pub fn descriptor_set_layouts(
+        mut self,
+        descriptor_set_layouts: &'a [vk::DescriptorSetLayout],
+    ) -> Self {
         self.descriptor_set_layouts = descriptor_set_layouts;
+        self.pipeline_layout_info = self
+            .pipeline_layout_info
+            .set_layouts(&self.descriptor_set_layouts);
+
+        self
+    }
+
+    pub fn push_constant_ranges(
+        mut self,
+        push_constant_ranges: &'a [vk::PushConstantRange],
+    ) -> Self {
+        self.push_constant_ranges = push_constant_ranges;
+        self.pipeline_layout_info = self
+            .pipeline_layout_info
+            .push_constant_ranges(&self.push_constant_ranges);
+
         self
     }
 
@@ -161,13 +182,10 @@ impl<'a> PipelineBuilder<'a> {
             .logic_op_enable(false)
             .attachments(&color_blend_attachment_states);
 
-        let layout_create_info =
-            vk::PipelineLayoutCreateInfo::default().set_layouts(&self.descriptor_set_layouts);
-
         let layout = unsafe_vk_try!(
             device
                 .ash_device
-                .create_pipeline_layout(&layout_create_info, None)
+                .create_pipeline_layout(&self.pipeline_layout_info, None)
         );
 
         let color_formats = [self.color_format];
