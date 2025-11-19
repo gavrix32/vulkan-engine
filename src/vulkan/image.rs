@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 pub struct Image {
     device: Arc<Device>,
-    vk_image: vk::Image,
+    pub vk_image: vk::Image,
     memory: vk::DeviceMemory,
     pub view: vk::ImageView,
     pub sampler: Option<vk::Sampler>,
@@ -28,13 +28,16 @@ impl Image {
         width: u32,
         height: u32,
         format: vk::Format,
+        image_type: vk::ImageType,
+        view_type: vk::ImageViewType,
+        array_layers: u32,
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
+        flags: vk::ImageCreateFlags,
         mipmapping: bool,
         msaa_samples: vk::SampleCountFlags,
     ) -> Self {
         let layout = vk::ImageLayout::UNDEFINED;
-        let image_type = vk::ImageType::TYPE_2D;
         let mip_levels = if mipmapping {
             max(width, height).ilog2() + 1
         } else {
@@ -42,6 +45,7 @@ impl Image {
         };
 
         let image_create_info = vk::ImageCreateInfo::default()
+            .flags(flags)
             .image_type(image_type)
             .extent(vk::Extent3D {
                 width,
@@ -49,7 +53,7 @@ impl Image {
                 depth: 1,
             })
             .mip_levels(mip_levels)
-            .array_layers(1)
+            .array_layers(array_layers)
             .format(format)
             .tiling(vk::ImageTiling::OPTIMAL)
             .initial_layout(layout)
@@ -83,7 +87,15 @@ impl Image {
 
         unsafe_vk_try!(device.ash_device.bind_image_memory(vk_image, memory, 0));
 
-        let view = create_image_view(device.clone(), vk_image, format, aspect, mip_levels);
+        let view = create_image_view(
+            device.clone(),
+            vk_image,
+            format,
+            view_type,
+            array_layers,
+            aspect,
+            mip_levels,
+        );
 
         Self {
             device,
@@ -124,6 +136,7 @@ impl Image {
             msaa_samples,
             mag_filter,
             min_filter,
+            1,
         )
     }
 
@@ -157,6 +170,7 @@ impl Image {
             msaa_samples,
             mag_filter,
             min_filter,
+            1,
         )
     }
 
@@ -172,6 +186,7 @@ impl Image {
         msaa_samples: vk::SampleCountFlags,
         mag_filter: vk::Filter,
         min_filter: vk::Filter,
+        layer_count: u32,
     ) -> Self {
         let pixel_size = match format {
             vk::Format::R8G8B8A8_UNORM | vk::Format::R8G8B8A8_SRGB => 4,
@@ -258,6 +273,7 @@ impl Image {
             layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             mip_levels,
+            layer_count,
         );
         encoder.end_single_time(device.graphics_queue);
 
@@ -288,6 +304,7 @@ impl Image {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 mip_levels,
+                layer_count,
             );
             encoder.end_single_time(device.graphics_queue);
         }
@@ -296,6 +313,8 @@ impl Image {
             device.clone(),
             vk_image,
             format,
+            vk::ImageViewType::TYPE_2D,
+            1,
             vk::ImageAspectFlags::COLOR,
             mip_levels,
         );
@@ -316,6 +335,7 @@ impl Image {
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
         mip_levels: u32,
+        layer_count: u32,
     ) {
         let (src_stage, dst_stage, src_access, dst_access) = match (old_layout, new_layout) {
             (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
@@ -323,6 +343,18 @@ impl Image {
                 vk::PipelineStageFlags2::TRANSFER,
                 vk::AccessFlags2::empty(),
                 vk::AccessFlags2::TRANSFER_WRITE,
+            ),
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL) => (
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::AccessFlags2::empty(),
+                vk::AccessFlags2::SHADER_STORAGE_WRITE,
+            ),
+            (vk::ImageLayout::GENERAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                vk::AccessFlags2::SHADER_READ,
             ),
             (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
                 vk::PipelineStageFlags2::TRANSFER,
@@ -364,13 +396,43 @@ impl Image {
                 base_mip_level: 0,
                 level_count: mip_levels,
                 base_array_layer: 0,
-                layer_count: 1,
+                layer_count,
             });
 
         let barriers = [barrier];
         let dependency_info = vk::DependencyInfo::default().image_memory_barriers(&barriers);
 
         encoder.cmd_pipeline_barrier2(&dependency_info);
+    }
+
+    // TODO: Builder for Image
+    pub fn create_sampler(
+        mut self,
+        mip_levels: u32,
+        mag_filter: vk::Filter,
+        min_filter: vk::Filter,
+    ) -> Self {
+        let sampler_create_info = vk::SamplerCreateInfo::default()
+            .mag_filter(mag_filter)
+            .min_filter(min_filter)
+            .address_mode_u(vk::SamplerAddressMode::REPEAT)
+            .address_mode_v(vk::SamplerAddressMode::REPEAT)
+            .address_mode_w(vk::SamplerAddressMode::REPEAT)
+            .anisotropy_enable(false)
+            .max_anisotropy(1.0)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .compare_op(vk::CompareOp::ALWAYS)
+            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(0.0)
+            .min_lod(0.0)
+            .max_lod(mip_levels as f32);
+
+        self.sampler = Some(unsafe_vk_try!(
+            self.device.ash_device.create_sampler(&sampler_create_info, None)
+        ));
+        self
     }
 }
 
@@ -543,19 +605,21 @@ fn create_image_view(
     device: Arc<Device>,
     image: vk::Image,
     format: vk::Format,
+    ty: vk::ImageViewType,
+    layer_count: u32,
     aspect: vk::ImageAspectFlags,
     mip_levels: u32,
 ) -> vk::ImageView {
     let image_view_create_info = vk::ImageViewCreateInfo::default()
         .image(image)
-        .view_type(vk::ImageViewType::TYPE_2D)
+        .view_type(ty)
         .format(format)
         .subresource_range(vk::ImageSubresourceRange {
             aspect_mask: aspect,
             base_mip_level: 0,
             level_count: mip_levels,
             base_array_layer: 0,
-            layer_count: 1,
+            layer_count,
         });
 
     unsafe_vk_try!(

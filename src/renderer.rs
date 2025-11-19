@@ -205,6 +205,7 @@ impl Renderer {
                 vk::SampleCountFlags::TYPE_1,
                 vk::Filter::LINEAR,
                 vk::Filter::LINEAR,
+                1,
             );
 
             images.push(image);
@@ -420,6 +421,122 @@ impl Renderer {
         let binding_descriptions = [Vertex::get_binding_description()];
         let attribute_descriptions = Vertex::get_attribute_descriptions();
 
+        // Equirectangular to cubemap
+
+        let cubemap_size = 1024;
+        let faces_count = 6;
+
+        let cubemap_image = Image::new(
+            &instance,
+            &adapter,
+            device.clone(),
+            cubemap_size,
+            cubemap_size,
+            vk::Format::R16G16B16A16_SFLOAT,
+            vk::ImageType::TYPE_2D,
+            vk::ImageViewType::TYPE_2D_ARRAY,
+            faces_count,
+            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+            vk::ImageAspectFlags::COLOR,
+            vk::ImageCreateFlags::CUBE_COMPATIBLE,
+            false,
+            vk::SampleCountFlags::TYPE_1,
+        )
+        .create_sampler(1, vk::Filter::LINEAR, vk::Filter::LINEAR);
+
+        let equirect_to_cubemap_descriptor_layout = DescriptorSetLayout::builder(device.clone())
+            .binding(
+                0,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                1,
+                vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                1,
+                vk::DescriptorType::STORAGE_IMAGE,
+                1,
+                vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .build();
+
+        let equirect_to_cubemap_pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1),
+        ];
+        let equirect_to_cubemap_pool =
+            DescriptorPool::new(device.clone(), 1, &equirect_to_cubemap_pool_sizes);
+        let equirect_to_cubemap_descriptor_set =
+            equirect_to_cubemap_pool.allocate(&equirect_to_cubemap_descriptor_layout, 0);
+
+        DescriptorWriter::default()
+            .image(
+                0,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                &images[env_index as usize],
+            )
+            .image(
+                1,
+                vk::DescriptorType::STORAGE_IMAGE,
+                vk::ImageLayout::GENERAL,
+                &cubemap_image,
+            )
+            .update(device.clone(), equirect_to_cubemap_descriptor_set);
+
+        let cubemap_image_encoder = Encoder::begin_single_time(device.clone(), &adapter);
+        Image::transition_layout(
+            &cubemap_image_encoder,
+            cubemap_image.vk_image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL,
+            1,
+            faces_count,
+        );
+
+        let equirect_to_cubemap_pipeline = PipelineBuilder::default()
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/equirect_to_cubemap.spv")),
+                vk::ShaderStageFlags::COMPUTE,
+                c"main",
+            )
+            .descriptor_set_layouts(&[equirect_to_cubemap_descriptor_layout.vk_layout])
+            .build_compute_pipeline(device.clone());
+
+        cubemap_image_encoder.cmd_bind_pipeline(
+            vk::PipelineBindPoint::COMPUTE,
+            equirect_to_cubemap_pipeline.vk_pipeline,
+        );
+
+        let group_count = (cubemap_size + 16 - 1) / 16;
+
+        cubemap_image_encoder.cmd_bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            equirect_to_cubemap_pipeline.layout,
+            0,
+            &[equirect_to_cubemap_descriptor_set],
+            &[],
+        );
+
+        cubemap_image_encoder.cmd_dispatch(group_count, group_count, faces_count);
+
+        Image::transition_layout(
+            &cubemap_image_encoder,
+            cubemap_image.vk_image,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            1,
+            1,
+        );
+        cubemap_image_encoder.end_single_time(device.graphics_queue);
+
+        // TODO: HDR in RGBA16F
+
         let pipeline_builder = PipelineBuilder::default()
             .vertex_input(&binding_descriptions, &attribute_descriptions)
             .input_assembly(vk::PrimitiveTopology::TRIANGLE_LIST, false)
@@ -458,7 +575,7 @@ impl Renderer {
             .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .descriptor_set_layouts(&[pbr_descriptor_layout.vk_layout])
             .push_constant_ranges(&[push_constant_range])
-            .build(device.clone());
+            .build_graphics_pipeline(device.clone());
 
         let light_pipeline = pipeline_builder
             .clone()
@@ -474,7 +591,7 @@ impl Renderer {
             )
             .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .descriptor_set_layouts(&[light_descriptor_layout.vk_layout])
-            .build(device.clone());
+            .build_graphics_pipeline(device.clone());
 
         let blit_pipeline = pipeline_builder
             .shader_stage(
@@ -489,7 +606,7 @@ impl Renderer {
             )
             .descriptor_set_layouts(&[blit_descriptor_layout.vk_layout])
             .push_constant_ranges(&[push_constant_range])
-            .build(device.clone());
+            .build_graphics_pipeline(device.clone());
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             Self::create_sync_objects(device.clone(), swapchain.images.len());
@@ -677,6 +794,7 @@ impl Renderer {
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             1,
+            1,
         );
 
         let clear_color = vk::ClearValue {
@@ -824,6 +942,7 @@ impl Renderer {
             self.swapchain.images[swapchain_image_index as usize],
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::PRESENT_SRC_KHR,
+            1,
             1,
         );
 

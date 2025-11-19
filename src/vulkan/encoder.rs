@@ -207,6 +207,16 @@ impl Encoder {
         }
     }
 
+    pub fn cmd_dispatch(&self, group_count_x: u32, group_count_y: u32, group_count_z: u32) {
+        let cmd = self.command_buffers[self.command_buffer_index];
+
+        unsafe {
+            self.device
+                .ash_device
+                .cmd_dispatch(cmd, group_count_x, group_count_y, group_count_z);
+        }
+    }
+
     pub fn cmd_pipeline_barrier2(&self, dependency_info: &vk::DependencyInfo) {
         let cmd = self.command_buffers[self.command_buffer_index];
 

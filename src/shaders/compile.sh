@@ -1,13 +1,13 @@
 #!/bin/bash
 
-SHADER_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUT_DIR="$SHADER_DIR/spirv"
+SHADER_DIR="$(cd "$(dirname "$0")" && pwd)/slang"
+OUTPUT_DIR="$SHADER_DIR/../spirv"
 
 mkdir -p "$OUTPUT_DIR"
 
 echo "Compiling shaders..."
 
-for SHADER in pbr light blit; do
+for SHADER in equirect_to_cubemap pbr light blit; do
     SRC="$SHADER_DIR/$SHADER.slang"
     DST="$OUTPUT_DIR/$SHADER.spv"
 

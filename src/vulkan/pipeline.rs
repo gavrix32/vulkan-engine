@@ -152,7 +152,7 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
-    pub fn build(self, device: Arc<Device>) -> Pipeline {
+    pub fn build_graphics_pipeline(self, device: Arc<Device>) -> Pipeline {
         let mut shader_stages = Vec::new();
 
         for (bytes, stage, c_name) in self.shader_stage_data {
@@ -217,6 +217,52 @@ impl<'a> PipelineBuilder<'a> {
             unsafe {
                 device.ash_device.destroy_shader_module(stage.module, None);
             }
+        }
+
+        Pipeline {
+            device,
+            layout,
+            vk_pipeline: pipelines[0],
+        }
+    }
+
+    pub fn build_compute_pipeline(self, device: Arc<Device>) -> Pipeline {
+        let (bytes, stage, c_name) = self.shader_stage_data.last().unwrap();
+
+        let words = ash::util::read_spv(&mut Cursor::new(bytes)).unwrap();
+
+        let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&words);
+        let module = unsafe_vk_try!(
+            device
+                .ash_device
+                .create_shader_module(&shader_module_create_info, None)
+        );
+
+        let shader_stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(*stage)
+            .module(module)
+            .name(c_name);
+
+        let layout = unsafe_vk_try!(
+            device
+                .ash_device
+                .create_pipeline_layout(&self.pipeline_layout_info, None)
+        );
+
+        let pipeline_create_info = vk::ComputePipelineCreateInfo::default()
+            .stage(shader_stage)
+            .layout(layout);
+
+        let pipelines = unsafe_vk_try!(device.ash_device.create_compute_pipelines(
+            vk::PipelineCache::null(),
+            &[pipeline_create_info],
+            None,
+        ));
+
+        unsafe {
+            device
+                .ash_device
+                .destroy_shader_module(shader_stage.module, None);
         }
 
         Pipeline {
