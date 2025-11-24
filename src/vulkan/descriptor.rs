@@ -1,7 +1,7 @@
 use crate::unsafe_vk_try;
 use crate::vulkan::buffer::Buffer;
 use crate::vulkan::device::Device;
-use crate::vulkan::image::Image;
+use crate::vulkan::image::{ImageView, Sampler};
 use ash::vk;
 use std::sync::Arc;
 
@@ -113,12 +113,13 @@ impl<'a> DescriptorWriter<'a> {
         binding: u32,
         ty: vk::DescriptorType,
         layout: vk::ImageLayout,
-        image: &'a Image,
+        image_view: &'a ImageView,
+        sampler: &'a Sampler,
     ) -> Self {
         let image_info = vk::DescriptorImageInfo::default()
             .image_layout(layout)
-            .image_view(image.view)
-            .sampler(image.sampler.expect("Image must have a sampler"));
+            .image_view(image_view.handle)
+            .sampler(sampler.handle);
         self.image_infos.push(image_info);
 
         let write = vk::WriteDescriptorSet::default()
@@ -137,26 +138,27 @@ impl<'a> DescriptorWriter<'a> {
         binding: u32,
         ty: vk::DescriptorType,
         layout: vk::ImageLayout,
-        images: &'a [Image],
+        image_views: &'a [ImageView],
+        sampler: &'a Sampler,
     ) -> Self {
         let info_start_index = self.image_infos.len();
 
-        for image in images {
+        for i in 0..image_views.len() {
             let image_info = vk::DescriptorImageInfo::default()
                 .image_layout(layout)
-                .image_view(image.view)
-                .sampler(image.sampler.expect("Image in array must have a sampler"));
+                .image_view(image_views[i].handle)
+                .sampler(sampler.handle);
             self.image_infos.push(image_info);
         }
 
         let write = vk::WriteDescriptorSet::default()
             .dst_binding(binding)
-            .descriptor_count(images.len() as u32)
+            .descriptor_count(image_views.len() as u32)
             .descriptor_type(ty)
             .image_info(unsafe {
                 std::slice::from_raw_parts(
                     self.image_infos.as_ptr().add(info_start_index),
-                    images.len(),
+                    image_views.len(),
                 )
             });
 

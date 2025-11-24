@@ -1,6 +1,6 @@
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::device::Device;
-use crate::vulkan::image::Image;
+use crate::vulkan::image::{Image, ImageBuilder, ImageView};
 use crate::vulkan::instance::Instance;
 use crate::vulkan::surface::Surface;
 use crate::vulkan::sync::Semaphore;
@@ -16,8 +16,10 @@ pub struct Swapchain {
     pub images: Vec<vk::Image>,
     pub extent: vk::Extent2D,
     pub image_views: Vec<vk::ImageView>,
-    pub color_image: Image,
-    pub depth_image: Image,
+    pub color_image: Arc<Image>,
+    pub depth_image: Arc<Image>,
+    pub color_image_view: ImageView,
+    pub depth_image_view: ImageView,
 }
 
 impl Swapchain {
@@ -38,6 +40,8 @@ impl Swapchain {
             image_views,
             color_image,
             depth_image,
+            color_image_view,
+            depth_image_view,
         ) = init(
             instance,
             adapter,
@@ -57,6 +61,8 @@ impl Swapchain {
             image_views,
             color_image,
             depth_image,
+            color_image_view,
+            depth_image_view,
         }
     }
 
@@ -96,6 +102,8 @@ impl Swapchain {
             image_views,
             color_image,
             depth_image,
+            color_image_view,
+            depth_image_view,
         ) = init(
             instance,
             adapter,
@@ -113,6 +121,8 @@ impl Swapchain {
         self.image_views = image_views;
         self.color_image = color_image;
         self.depth_image = depth_image;
+        self.color_image_view = color_image_view;
+        self.depth_image_view = depth_image_view;
     }
 
     pub fn acquire_next_image(&mut self, signal_semaphore: &Semaphore) -> Option<u32> {
@@ -195,8 +205,10 @@ fn init(
     Vec<vk::Image>,
     vk::Extent2D,
     Vec<vk::ImageView>,
-    Image,
-    Image,
+    Arc<Image>,
+    Arc<Image>,
+    ImageView,
+    ImageView,
 ) {
     let support_details = SupportDetails::query_support(adapter.physical_device, surface);
 
@@ -241,37 +253,39 @@ fn init(
     let swapchain_khr = unsafe_vk_try!(swapchain_device.create_swapchain(&create_info, None));
     let images = unsafe_vk_try!(swapchain_device.get_swapchain_images(swapchain_khr));
     let image_views = create_image_views(&images, surface_format.format, device.clone());
-    let color_image = Image::new(
-        instance,
-        adapter,
-        device.clone(),
-        width,
-        height,
-        surface_format.format,
-        vk::ImageType::TYPE_2D,
-        vk::ImageViewType::TYPE_2D,
-        1,
-        vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT,
-        vk::ImageAspectFlags::COLOR,
-        vk::ImageCreateFlags::empty(),
-        false,
-        msaa_samples,
+
+    let color_image = Arc::new(
+        ImageBuilder::default()
+            .size(width, height)
+            .format(surface_format.format)
+            .usage(
+                vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            )
+            .samples(msaa_samples)
+            .build(&instance, &adapter, device.clone()),
     );
-    let depth_image = Image::new(
-        &instance,
-        &adapter,
+
+    let depth_image = Arc::new(
+        ImageBuilder::default()
+            .size(width, height)
+            .format(vk::Format::D32_SFLOAT_S8_UINT)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+            .samples(msaa_samples)
+            .build(&instance, &adapter, device.clone()),
+    );
+
+    let color_image_view = ImageView::new(
         device.clone(),
-        width,
-        height,
-        vk::Format::D32_SFLOAT_S8_UINT,
-        vk::ImageType::TYPE_2D,
+        color_image.clone(),
         vk::ImageViewType::TYPE_2D,
-        1,
-        vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        vk::ImageAspectFlags::COLOR,
+    );
+
+    let depth_image_view = ImageView::new(
+        device.clone(),
+        depth_image.clone(),
+        vk::ImageViewType::TYPE_2D,
         vk::ImageAspectFlags::DEPTH,
-        vk::ImageCreateFlags::empty(),
-        false,
-        msaa_samples,
     );
 
     (
@@ -282,6 +296,8 @@ fn init(
         image_views,
         color_image,
         depth_image,
+        color_image_view,
+        depth_image_view,
     )
 }
 

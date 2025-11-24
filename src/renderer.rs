@@ -5,7 +5,7 @@ use crate::vulkan::buffer::Buffer;
 use crate::vulkan::descriptor::{DescriptorPool, DescriptorSetLayout, DescriptorWriter};
 use crate::vulkan::device::Device;
 use crate::vulkan::encoder::Encoder;
-use crate::vulkan::image::Image;
+use crate::vulkan::image::{Image, ImageBuilder, ImageView, Sampler};
 use crate::vulkan::instance::Instance;
 use crate::vulkan::pipeline::{Pipeline, PipelineBuilder};
 use crate::vulkan::surface::Surface;
@@ -16,6 +16,7 @@ use ash::util::Align;
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
+use image::ImageReader;
 use log::{info, warn};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::io::Cursor;
@@ -80,7 +81,10 @@ pub struct Renderer {
 
     push_constant_data: PushConstantData,
 
-    _images: Vec<Image>,
+    _sampler: Sampler,
+    _image_views: Vec<ImageView>,
+
+    _images: Vec<Arc<Image>>,
 
     swapchain: Swapchain,
     device: Arc<Device>,
@@ -159,7 +163,16 @@ impl Renderer {
         };
         mikktspace::generate_tangents(&mut mesh_view);
 
-        let mut images = Vec::new();
+        let mut images = Vec::<Arc<Image>>::new();
+        let mut image_views = Vec::<ImageView>::new();
+
+        let sampler = Sampler::new(
+            device.clone(),
+            vk::Filter::LINEAR,
+            vk::Filter::LINEAR,
+            vk::LOD_CLAMP_NONE,
+        );
+
         let mut size_mb = 0;
 
         info!("Loading textures");
@@ -193,50 +206,93 @@ impl Renderer {
                 }
             };
 
-            let image = Image::from_bytes(
-                image_bytes,
-                image_width,
-                image_height,
-                vk::Format::R8G8B8A8_SRGB,
-                &instance,
-                &adapter,
-                device.clone(),
-                true,
-                vk::SampleCountFlags::TYPE_1,
-                vk::Filter::LINEAR,
-                vk::Filter::LINEAR,
-                1,
+            let image = Arc::new(
+                ImageBuilder::default()
+                    .size(image_width, image_height)
+                    .mipmapping(true)
+                    .format(vk::Format::R8G8B8A8_SRGB)
+                    .usage(
+                        vk::ImageUsageFlags::TRANSFER_SRC
+                            | vk::ImageUsageFlags::TRANSFER_DST
+                            | vk::ImageUsageFlags::SAMPLED,
+                    )
+                    .bytes(image_bytes)
+                    .build(&instance, &adapter, device.clone()),
             );
 
-            images.push(image);
+            images.push(image.clone());
+            image_views.push(ImageView::new(
+                device.clone(),
+                image.clone(),
+                vk::ImageViewType::TYPE_2D,
+                vk::ImageAspectFlags::COLOR,
+            ));
         }
 
         let env_index = images.len() as u32;
-        let env_image = Image::read_rgba32(
-            &mut Cursor::new(include_bytes!(
-                "../resources/textures/the_sky_is_on_fire_4k.hdr"
-            )),
-            &instance,
-            &adapter,
-            device.clone(),
-            true,
-            vk::SampleCountFlags::TYPE_1,
-            vk::Filter::LINEAR,
-            vk::Filter::LINEAR,
-        );
-        images.push(env_image);
 
-        let placeholder_image = Image::read_rgba8(
-            &mut Cursor::new(include_bytes!("../resources/textures/placeholder.png")),
-            &instance,
-            &adapter,
-            device.clone(),
-            true,
-            vk::SampleCountFlags::TYPE_1,
-            vk::Filter::NEAREST,
-            vk::Filter::NEAREST,
+        let env_raw_bytes = include_bytes!("../resources/textures/the_sky_is_on_fire_4k.hdr");
+        let env_image_reader = ImageReader::new(Cursor::new(env_raw_bytes))
+            .with_guessed_format()
+            .expect("Failed to guess format")
+            .decode()
+            .expect("Failed to decode image")
+            .to_rgba32f();
+        let env_bytes = bytemuck::cast_slice(env_image_reader.as_raw());
+        let env_image = Arc::new(
+            ImageBuilder::default()
+                .size(env_image_reader.width(), env_image_reader.height())
+                .mipmapping(true)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .usage(
+                    vk::ImageUsageFlags::TRANSFER_SRC
+                        | vk::ImageUsageFlags::TRANSFER_DST
+                        | vk::ImageUsageFlags::SAMPLED,
+                )
+                .bytes(env_bytes)
+                .build(&instance, &adapter, device.clone()),
         );
-        images.push(placeholder_image);
+
+        images.push(env_image.clone());
+        image_views.push(ImageView::new(
+            device.clone(),
+            env_image.clone(),
+            vk::ImageViewType::TYPE_2D,
+            vk::ImageAspectFlags::COLOR,
+        ));
+
+        let placeholder_raw_bytes = include_bytes!("../resources/textures/placeholder.png");
+        let placeholder_image_reader = ImageReader::new(Cursor::new(placeholder_raw_bytes))
+            .with_guessed_format()
+            .expect("Failed to guess format")
+            .decode()
+            .expect("Failed to decode image")
+            .to_rgba8();
+        let placeholder_bytes = bytemuck::cast_slice(placeholder_image_reader.as_raw());
+        let placeholder_image = Arc::new(
+            ImageBuilder::default()
+                .size(
+                    placeholder_image_reader.width(),
+                    placeholder_image_reader.height(),
+                )
+                .mipmapping(true)
+                .format(vk::Format::R8G8B8A8_SRGB)
+                .usage(
+                    vk::ImageUsageFlags::TRANSFER_SRC
+                        | vk::ImageUsageFlags::TRANSFER_DST
+                        | vk::ImageUsageFlags::SAMPLED,
+                )
+                .bytes(placeholder_bytes)
+                .build(&instance, &adapter, device.clone()),
+        );
+
+        images.push(placeholder_image.clone());
+        image_views.push(ImageView::new(
+            device.clone(),
+            placeholder_image.clone(),
+            vk::ImageViewType::TYPE_2D,
+            vk::ImageAspectFlags::COLOR,
+        ));
 
         info!("Textures: {}, Size: {} MB", images.len(), size_mb);
 
@@ -376,7 +432,8 @@ impl Renderer {
                     1,
                     vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    &images,
+                    &image_views,
+                    &sampler,
                 )
                 .update(device.clone(), set);
 
@@ -409,7 +466,8 @@ impl Renderer {
                     0,
                     vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    &images[env_index as usize],
+                    &image_views[env_index as usize],
+                    &sampler,
                 )
                 .update(device.clone(), set);
 
@@ -426,23 +484,22 @@ impl Renderer {
         let cubemap_size = 1024;
         let faces_count = 6;
 
-        let cubemap_image = Image::new(
-            &instance,
-            &adapter,
+        let cubemap_image = Arc::new(
+            ImageBuilder::default()
+                .size(cubemap_size, cubemap_size)
+                .layers(faces_count)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
+                .flags(vk::ImageCreateFlags::CUBE_COMPATIBLE)
+                .build(&instance, &adapter, device.clone()),
+        );
+
+        let cubemap_image_view = ImageView::new(
             device.clone(),
-            cubemap_size,
-            cubemap_size,
-            vk::Format::R16G16B16A16_SFLOAT,
-            vk::ImageType::TYPE_2D,
+            cubemap_image.clone(),
             vk::ImageViewType::TYPE_2D_ARRAY,
-            faces_count,
-            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
             vk::ImageAspectFlags::COLOR,
-            vk::ImageCreateFlags::CUBE_COMPATIBLE,
-            false,
-            vk::SampleCountFlags::TYPE_1,
-        )
-        .create_sampler(1, vk::Filter::LINEAR, vk::Filter::LINEAR);
+        );
 
         let equirect_to_cubemap_descriptor_layout = DescriptorSetLayout::builder(device.clone())
             .binding(
@@ -479,20 +536,22 @@ impl Renderer {
                 0,
                 vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                &images[env_index as usize],
+                &image_views[env_index as usize],
+                &sampler,
             )
             .image(
                 1,
                 vk::DescriptorType::STORAGE_IMAGE,
                 vk::ImageLayout::GENERAL,
-                &cubemap_image,
+                &cubemap_image_view,
+                &sampler,
             )
             .update(device.clone(), equirect_to_cubemap_descriptor_set);
 
         let cubemap_image_encoder = Encoder::begin_single_time(device.clone(), &adapter);
         Image::transition_layout(
             &cubemap_image_encoder,
-            cubemap_image.vk_image,
+            cubemap_image.handle,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::GENERAL,
             1,
@@ -527,15 +586,13 @@ impl Renderer {
 
         Image::transition_layout(
             &cubemap_image_encoder,
-            cubemap_image.vk_image,
+            cubemap_image.handle,
             vk::ImageLayout::GENERAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             1,
             1,
         );
         cubemap_image_encoder.end_single_time(device.graphics_queue);
-
-        // TODO: HDR in RGBA16F
 
         let pipeline_builder = PipelineBuilder::default()
             .vertex_input(&binding_descriptions, &attribute_descriptions)
@@ -637,6 +694,9 @@ impl Renderer {
             encoder,
 
             _images: images,
+            _image_views: image_views,
+
+            _sampler: sampler,
 
             light_vertex_buffer,
             light_index_buffer,
@@ -804,7 +864,7 @@ impl Renderer {
         };
 
         let color_attachment = vk::RenderingAttachmentInfo::default()
-            .image_view(self.swapchain.color_image.view)
+            .image_view(self.swapchain.color_image_view.handle)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .resolve_mode(vk::ResolveModeFlags::AVERAGE)
             .resolve_image_view(self.swapchain.image_views[swapchain_image_index as usize])
@@ -822,7 +882,7 @@ impl Renderer {
         };
 
         let depth_attachment = vk::RenderingAttachmentInfo::default()
-            .image_view(self.swapchain.depth_image.view)
+            .image_view(self.swapchain.depth_image_view.handle)
             .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)

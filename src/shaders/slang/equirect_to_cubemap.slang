@@ -2,7 +2,7 @@
 Sampler2D env_texture;
 
 [vk::binding(1, 0)]
-[vk::image_format("rgba16f")]
+[vk::image_format("rgba32f")]
 RWTexture2DArray<float4> output_image;
 
 static const float PI = 3.14159265;
