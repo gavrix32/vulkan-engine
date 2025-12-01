@@ -156,7 +156,8 @@ impl<'a> PipelineBuilder<'a> {
         let mut shader_stages = Vec::new();
 
         for (bytes, stage, c_name) in self.shader_stage_data {
-            let words = ash::util::read_spv(&mut Cursor::new(bytes)).unwrap();
+            let words =
+                ash::util::read_spv(&mut Cursor::new(bytes)).expect("Failed to read SPIR-V");
 
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&words);
             let module = unsafe_vk_try!(
@@ -227,9 +228,12 @@ impl<'a> PipelineBuilder<'a> {
     }
 
     pub fn build_compute_pipeline(self, device: Arc<Device>) -> Pipeline {
-        let (bytes, stage, c_name) = self.shader_stage_data.last().unwrap();
+        let (bytes, stage, c_name) = self
+            .shader_stage_data
+            .last()
+            .expect("Shader stage data not found");
 
-        let words = ash::util::read_spv(&mut Cursor::new(bytes)).unwrap();
+        let words = ash::util::read_spv(&mut Cursor::new(bytes)).expect("Failed to read SPIR-V");
 
         let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&words);
         let module = unsafe_vk_try!(

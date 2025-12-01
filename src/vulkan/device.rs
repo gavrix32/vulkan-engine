@@ -18,8 +18,18 @@ impl Device {
         let queue_priorities = [queue_priority];
 
         let mut unique_queue_families = HashSet::new();
-        unique_queue_families.insert(adapter.queue_family_indices.graphics_family.unwrap());
-        unique_queue_families.insert(adapter.queue_family_indices.present_family.unwrap());
+        unique_queue_families.insert(
+            adapter
+                .queue_family_indices
+                .graphics_family
+                .expect("Graphics queue family not found"),
+        );
+        unique_queue_families.insert(
+            adapter
+                .queue_family_indices
+                .present_family
+                .expect("Present queue family not found"),
+        );
 
         let mut queue_create_infos = Vec::new();
 
@@ -58,10 +68,22 @@ impl Device {
         ));
 
         let graphics_queue = unsafe {
-            ash_device.get_device_queue(adapter.queue_family_indices.graphics_family.unwrap(), 0)
+            ash_device.get_device_queue(
+                adapter
+                    .queue_family_indices
+                    .graphics_family
+                    .expect("Graphics queue family not found"),
+                0,
+            )
         };
         let present_queue = unsafe {
-            ash_device.get_device_queue(adapter.queue_family_indices.present_family.unwrap(), 0)
+            ash_device.get_device_queue(
+                adapter
+                    .queue_family_indices
+                    .present_family
+                    .expect("Present queue family not found"),
+                0,
+            )
         };
 
         Self {

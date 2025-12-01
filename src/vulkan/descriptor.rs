@@ -101,7 +101,13 @@ impl<'a> DescriptorWriter<'a> {
             .dst_binding(binding)
             .descriptor_type(ty)
             .buffer_info(unsafe {
-                std::slice::from_raw_parts(self.buffer_infos.last().unwrap() as *const _, 1)
+                std::slice::from_raw_parts(
+                    self.buffer_infos
+                        .last()
+                        .expect("No buffer info to create buffer write descriptor set")
+                        as *const _,
+                    1,
+                )
             });
 
         self.writes.push(write);
@@ -126,7 +132,13 @@ impl<'a> DescriptorWriter<'a> {
             .dst_binding(binding)
             .descriptor_type(ty)
             .image_info(unsafe {
-                std::slice::from_raw_parts(self.image_infos.last().unwrap() as *const _, 1)
+                std::slice::from_raw_parts(
+                    self.image_infos
+                        .last()
+                        .expect("No image info to create image write descriptor set")
+                        as *const _,
+                    1,
+                )
             });
 
         self.writes.push(write);

@@ -241,8 +241,14 @@ fn init(
         .old_swapchain(vk::SwapchainKHR::null());
 
     let indices = [
-        adapter.queue_family_indices.graphics_family.unwrap(),
-        adapter.queue_family_indices.present_family.unwrap(),
+        adapter
+            .queue_family_indices
+            .graphics_family
+            .expect("Graphics queue family not found"),
+        adapter
+            .queue_family_indices
+            .present_family
+            .expect("Present queue family not found"),
     ];
 
     if adapter.queue_family_indices.graphics_family != adapter.queue_family_indices.present_family {

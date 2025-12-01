@@ -53,7 +53,9 @@ impl ApplicationHandler for State {
             .with_title(self.title.as_str())
             .with_inner_size(PhysicalSize::new(self.width, self.height));
 
-        let window = event_loop.create_window(window_attribs).unwrap();
+        let window = event_loop
+            .create_window(window_attribs)
+            .expect("Failed to create window");
 
         let args: Vec<String> = std::env::args().collect();
 
@@ -69,8 +71,14 @@ impl ApplicationHandler for State {
         let renderer = Renderer::new(
             self.width,
             self.height,
-            window.display_handle().unwrap().as_raw(),
-            window.window_handle().unwrap().as_raw(),
+            window
+                .display_handle()
+                .expect("Failed to get display handle")
+                .as_raw(),
+            window
+                .window_handle()
+                .expect("Failed to get window handle")
+                .as_raw(),
             validation,
         );
 

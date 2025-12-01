@@ -25,7 +25,7 @@ fn main() {
     });
     env_logger::Builder::from_env(env).init();
 
-    let mut event_loop = EventLoop::new().unwrap();
+    let mut event_loop = EventLoop::new().expect("Failed to create event loop");
     let mut state = State::new("Vulkan", 1280, 720);
     let mut fps_counter = FpsCounter::default().log_fps(Some(1000));
 

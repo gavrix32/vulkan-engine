@@ -739,7 +739,9 @@ impl Renderer {
         );
 
         staging_buffer.map_memory();
-        let data_ptr = staging_buffer.p_data.unwrap();
+        let data_ptr = staging_buffer
+            .p_data
+            .expect("No data pointer in staging buffer");
 
         let mut vertex_align =
             unsafe { Align::new(data_ptr, align_of::<T>() as vk::DeviceSize, size) };
@@ -1039,7 +1041,9 @@ impl Renderer {
 
         let mut uniform_align = unsafe {
             Align::new(
-                uniform_buffer.p_data.unwrap(),
+                uniform_buffer
+                    .p_data
+                    .expect("No data pointer in uniform buffer"),
                 align_of::<f32>() as vk::DeviceSize,
                 size_of::<UniformBufferData>() as vk::DeviceSize,
             )

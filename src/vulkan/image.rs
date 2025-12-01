@@ -117,7 +117,9 @@ impl Image {
         );
 
         staging_buffer.map_memory();
-        let data_ptr = staging_buffer.p_data.unwrap();
+        let data_ptr = staging_buffer
+            .p_data
+            .expect("No data pointer in staging buffer");
 
         let mut image_align =
             unsafe { Align::new(data_ptr, align_of::<u8>() as vk::DeviceSize, image_size) };

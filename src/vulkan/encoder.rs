@@ -15,7 +15,12 @@ impl Encoder {
     pub fn new(device: Arc<Device>, adapter: &Adapter, max_command_buffers: usize) -> Self {
         let command_pool_create_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(adapter.queue_family_indices.graphics_family.unwrap());
+            .queue_family_index(
+                adapter
+                    .queue_family_indices
+                    .graphics_family
+                    .expect("Graphics queue family not found"),
+            );
 
         let command_pool = unsafe_vk_try!(
             device
@@ -309,7 +314,12 @@ impl Encoder {
 
         let command_pool_create_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(adapter.queue_family_indices.graphics_family.unwrap());
+            .queue_family_index(
+                adapter
+                    .queue_family_indices
+                    .graphics_family
+                    .expect("Graphics queue family not found"),
+            );
 
         let command_pool = unsafe_vk_try!(
             device

@@ -99,7 +99,10 @@ fn traverse_node(
 
             let first_index = indices.len() as u32;
 
-            let indices_iter = reader.read_indices().unwrap().into_u32();
+            let indices_iter = reader
+                .read_indices()
+                .expect("Primitive indices not found")
+                .into_u32();
             let index_count = indices_iter.len() as u32;
 
             for index in indices_iter {
@@ -108,8 +111,8 @@ fn traverse_node(
 
             for (i, (pos, norm)) in reader
                 .read_positions()
-                .unwrap()
-                .zip(reader.read_normals().unwrap())
+                .expect("Primitive positions not found")
+                .zip(reader.read_normals().expect("Primitive normals not found"))
                 .enumerate()
             {
                 vertices.push(Vertex {

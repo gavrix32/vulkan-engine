@@ -65,7 +65,7 @@ fn get_required_extensions(
     validation: bool,
 ) -> Vec<*const c_char> {
     let mut extensions = ash_window::enumerate_required_extensions(display_handle)
-        .unwrap()
+        .expect("Failed to enumerate extensions required for creating surface")
         .to_vec();
 
     if validation {
@@ -81,7 +81,7 @@ fn check_validation_layer_support(entry: &ash::Entry) -> bool {
 
         for layer_properties in &available_layers {
             let name = unsafe { CStr::from_ptr(layer_properties.layer_name.as_ptr()) };
-            if layer_name == name.to_str().unwrap() {
+            if layer_name == name.to_str().expect("Failed to get a valid UTF-8 string") {
                 layer_found = true;
                 break;
             }

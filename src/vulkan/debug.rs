@@ -50,7 +50,9 @@ unsafe extern "system" fn debug_callback(
     use vk::DebugUtilsMessageSeverityFlagsEXT as SeverityFlag;
 
     let message = unsafe { CStr::from_ptr((*p_callback_data).p_message) };
-    let message_str = message.to_str().unwrap();
+    let message_str = message
+        .to_str()
+        .expect("Failed to get a valid UTF-8 string");
 
     match message_severity {
         SeverityFlag::VERBOSE => log::trace!("{:?} - {}", message_type, message_str),
@@ -64,7 +66,7 @@ unsafe extern "system" fn debug_callback(
 pub fn get_validation_layer_cstring_pointers() -> (Vec<CString>, Vec<*const c_char>) {
     let layers_cstring: Vec<CString> = VALIDATION_LAYERS
         .iter()
-        .map(|&s| CString::new(s).unwrap())
+        .map(|&s| CString::new(s).expect("Failed to create CString"))
         .collect();
     let pointers: Vec<*const c_char> = layers_cstring.iter().map(|s| s.as_ptr()).collect();
     (layers_cstring, pointers)
