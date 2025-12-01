@@ -20,6 +20,7 @@ pub struct Swapchain {
     pub depth_image: Arc<Image>,
     pub color_image_view: ImageView,
     pub depth_image_view: ImageView,
+    pub msaa_samples: vk::SampleCountFlags,
 }
 
 impl Swapchain {
@@ -63,6 +64,7 @@ impl Swapchain {
             depth_image,
             color_image_view,
             depth_image_view,
+            msaa_samples,
         }
     }
 
@@ -123,6 +125,7 @@ impl Swapchain {
         self.depth_image = depth_image;
         self.color_image_view = color_image_view;
         self.depth_image_view = depth_image_view;
+        self.msaa_samples = msaa_samples;
     }
 
     pub fn acquire_next_image(&mut self, signal_semaphore: &Semaphore) -> Option<u32> {

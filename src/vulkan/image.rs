@@ -125,6 +125,8 @@ impl Image {
 
         staging_buffer.unmap_memory();
 
+        // TODO: попробовать транзишены в 1 энкодер для better performance
+
         let encoder = Encoder::begin_single_time(self.device.clone(), adapter);
         Self::transition_layout(
             &encoder,

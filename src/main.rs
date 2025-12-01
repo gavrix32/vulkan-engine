@@ -6,6 +6,7 @@ mod renderer;
 mod state;
 mod vulkan;
 pub mod vertex;
+mod context;
 
 use crate::camera::Camera;
 use crate::fps_counter::FpsCounter;

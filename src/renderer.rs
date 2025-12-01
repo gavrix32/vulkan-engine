@@ -1,4 +1,5 @@
 use crate::camera::Camera;
+use crate::context::RenderContext;
 use crate::vertex::Vertex;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
@@ -8,9 +9,8 @@ use crate::vulkan::encoder::Encoder;
 use crate::vulkan::image::{Image, ImageBuilder, ImageView, Sampler};
 use crate::vulkan::instance::Instance;
 use crate::vulkan::pipeline::{Pipeline, PipelineBuilder};
-use crate::vulkan::surface::Surface;
 use crate::vulkan::swapchain::Swapchain;
-use crate::vulkan::{sync, util};
+use crate::vulkan::util;
 use crate::{loader, unsafe_vk_try};
 use ash::util::Align;
 use ash::vk;
@@ -23,6 +23,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Instant;
 
+// TODO: FrameContext?
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 #[repr(C)]
@@ -50,21 +51,6 @@ struct PushConstantData {
 }
 
 pub struct Renderer {
-    in_flight_fences: Vec<sync::Fence>,
-
-    image_available_semaphores: Vec<sync::Semaphore>,
-    render_finished_semaphores: Vec<sync::Semaphore>,
-
-    uniform_buffers: Vec<Vec<Buffer>>,
-
-    light_index_buffer: Buffer,
-    light_vertex_buffer: Buffer,
-
-    index_buffer: Buffer,
-    vertex_buffer: Buffer,
-
-    encoder: Encoder,
-
     blit_pipeline: Pipeline,
     light_pipeline: Pipeline,
     pbr_pipeline: Pipeline,
@@ -81,20 +67,20 @@ pub struct Renderer {
 
     push_constant_data: PushConstantData,
 
+    uniform_buffers: Vec<Vec<Buffer>>,
+
+    light_index_buffer: Buffer,
+    light_vertex_buffer: Buffer,
+
+    index_buffer: Buffer,
+    vertex_buffer: Buffer,
+
     _sampler: Sampler,
     _image_views: Vec<ImageView>,
 
     _images: Vec<Arc<Image>>,
 
-    swapchain: Swapchain,
-    device: Arc<Device>,
-    adapter: Adapter,
-    surface: Surface,
-    instance: Instance,
-
     frame_in_flight: usize,
-
-    msaa_samples: vk::SampleCountFlags,
 
     pub framebuffer_resized: bool,
     pub width: u32,
@@ -108,6 +94,8 @@ pub struct Renderer {
     timer: Instant,
 
     env_index: u32,
+
+    render_context: RenderContext,
 }
 
 impl Renderer {
@@ -118,23 +106,8 @@ impl Renderer {
         window_handle: RawWindowHandle,
         validation: bool,
     ) -> Self {
-        let instance = Instance::new(display_handle, validation);
-        let surface = Surface::new(&instance, display_handle, window_handle);
-        let adapter = Adapter::new(&instance, &surface);
-        let device = Arc::new(Device::new(&instance, &adapter));
-        let msaa_samples = adapter.max_usable_sample_count(&instance);
-
-        let swapchain = Swapchain::new(
-            &instance,
-            &adapter,
-            device.clone(),
-            &surface,
-            width,
-            height,
-            msaa_samples,
-        );
-
-        let encoder = Encoder::new(device.clone(), &adapter, MAX_FRAMES_IN_FLIGHT);
+        let render_context =
+            RenderContext::new(width, height, display_handle, window_handle, validation);
 
         info!("Importing model");
         let (document, buffers_data, images_data) =
@@ -167,7 +140,7 @@ impl Renderer {
         let mut image_views = Vec::<ImageView>::new();
 
         let sampler = Sampler::new(
-            device.clone(),
+            render_context.device.clone(),
             vk::Filter::LINEAR,
             vk::Filter::LINEAR,
             vk::LOD_CLAMP_NONE,
@@ -217,12 +190,16 @@ impl Renderer {
                             | vk::ImageUsageFlags::SAMPLED,
                     )
                     .bytes(image_bytes)
-                    .build(&instance, &adapter, device.clone()),
+                    .build(
+                        &render_context.instance,
+                        &render_context.adapter,
+                        render_context.device.clone(),
+                    ),
             );
 
             images.push(image.clone());
             image_views.push(ImageView::new(
-                device.clone(),
+                render_context.device.clone(),
                 image.clone(),
                 vk::ImageViewType::TYPE_2D,
                 vk::ImageAspectFlags::COLOR,
@@ -250,12 +227,16 @@ impl Renderer {
                         | vk::ImageUsageFlags::SAMPLED,
                 )
                 .bytes(env_bytes)
-                .build(&instance, &adapter, device.clone()),
+                .build(
+                    &render_context.instance,
+                    &render_context.adapter,
+                    render_context.device.clone(),
+                ),
         );
 
         images.push(env_image.clone());
         image_views.push(ImageView::new(
-            device.clone(),
+            render_context.device.clone(),
             env_image.clone(),
             vk::ImageViewType::TYPE_2D,
             vk::ImageAspectFlags::COLOR,
@@ -283,12 +264,16 @@ impl Renderer {
                         | vk::ImageUsageFlags::SAMPLED,
                 )
                 .bytes(placeholder_bytes)
-                .build(&instance, &adapter, device.clone()),
+                .build(
+                    &render_context.instance,
+                    &render_context.adapter,
+                    render_context.device.clone(),
+                ),
         );
 
         images.push(placeholder_image.clone());
         image_views.push(ImageView::new(
-            device.clone(),
+            render_context.device.clone(),
             placeholder_image.clone(),
             vk::ImageViewType::TYPE_2D,
             vk::ImageAspectFlags::COLOR,
@@ -297,19 +282,19 @@ impl Renderer {
         info!("Textures: {}, Size: {} MB", images.len(), size_mb);
 
         let vertex_buffer = Self::create_buffer(
-            &instance,
-            &adapter,
-            device.clone(),
-            device.graphics_queue,
+            &render_context.instance,
+            &render_context.adapter,
+            render_context.device.clone(),
+            render_context.device.graphics_queue,
             &vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         );
 
         let index_buffer = Self::create_buffer(
-            &instance,
-            &adapter,
-            device.clone(),
-            device.graphics_queue,
+            &render_context.instance,
+            &render_context.adapter,
+            render_context.device.clone(),
+            render_context.device.graphics_queue,
             &indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
@@ -339,26 +324,30 @@ impl Renderer {
         );
 
         let light_vertex_buffer = Self::create_buffer(
-            &instance,
-            &adapter,
-            device.clone(),
-            device.graphics_queue,
+            &render_context.instance,
+            &render_context.adapter,
+            render_context.device.clone(),
+            render_context.device.graphics_queue,
             &light_vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         );
 
         let light_index_buffer = Self::create_buffer(
-            &instance,
-            &adapter,
-            device.clone(),
-            device.graphics_queue,
+            &render_context.instance,
+            &render_context.adapter,
+            render_context.device.clone(),
+            render_context.device.graphics_queue,
             &light_indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
 
-        let uniform_buffers = Self::create_uniform_buffers(&instance, &adapter, device.clone());
+        let uniform_buffers = Self::create_uniform_buffers(
+            &render_context.instance,
+            &render_context.adapter,
+            render_context.device.clone(),
+        );
 
-        let pbr_descriptor_layout = DescriptorSetLayout::builder(device.clone())
+        let pbr_descriptor_layout = DescriptorSetLayout::builder(render_context.device.clone())
             .binding(
                 0,
                 vk::DescriptorType::UNIFORM_BUFFER,
@@ -377,7 +366,7 @@ impl Renderer {
             )
             .build();
 
-        let light_descriptor_layout = DescriptorSetLayout::builder(device.clone())
+        let light_descriptor_layout = DescriptorSetLayout::builder(render_context.device.clone())
             .binding(
                 0,
                 vk::DescriptorType::UNIFORM_BUFFER,
@@ -387,7 +376,7 @@ impl Renderer {
             )
             .build();
 
-        let blit_descriptor_layout = DescriptorSetLayout::builder(device.clone())
+        let blit_descriptor_layout = DescriptorSetLayout::builder(render_context.device.clone())
             .binding(
                 0,
                 vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -414,7 +403,11 @@ impl Renderer {
 
         let mut descriptor_pools = Vec::new();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            descriptor_pools.push(DescriptorPool::new(device.clone(), 3, &pool_sizes));
+            descriptor_pools.push(DescriptorPool::new(
+                render_context.device.clone(),
+                3,
+                &pool_sizes,
+            ));
         }
 
         let mut pbr_descriptor_sets = Vec::new();
@@ -435,7 +428,7 @@ impl Renderer {
                     &image_views,
                     &sampler,
                 )
-                .update(device.clone(), set);
+                .update(render_context.device.clone(), set);
 
             pbr_descriptor_sets.push(set);
         }
@@ -451,7 +444,7 @@ impl Renderer {
                     vk::DescriptorType::UNIFORM_BUFFER,
                     &uniform_buffers[1][frame],
                 )
-                .update(device.clone(), set);
+                .update(render_context.device.clone(), set);
 
             light_descriptor_sets.push(set);
         }
@@ -469,12 +462,12 @@ impl Renderer {
                     &image_views[env_index as usize],
                     &sampler,
                 )
-                .update(device.clone(), set);
+                .update(render_context.device.clone(), set);
 
             blit_descriptor_sets.push(set);
         }
 
-        let color_format = Swapchain::get_format(&adapter, &surface);
+        let color_format = Swapchain::get_format(&render_context.adapter, &render_context.surface);
 
         let binding_descriptions = [Vertex::get_binding_description()];
         let attribute_descriptions = Vertex::get_attribute_descriptions();
@@ -491,32 +484,37 @@ impl Renderer {
                 .format(vk::Format::R32G32B32A32_SFLOAT)
                 .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
                 .flags(vk::ImageCreateFlags::CUBE_COMPATIBLE)
-                .build(&instance, &adapter, device.clone()),
+                .build(
+                    &render_context.instance,
+                    &render_context.adapter,
+                    render_context.device.clone(),
+                ),
         );
 
         let cubemap_image_view = ImageView::new(
-            device.clone(),
+            render_context.device.clone(),
             cubemap_image.clone(),
             vk::ImageViewType::TYPE_2D_ARRAY,
             vk::ImageAspectFlags::COLOR,
         );
 
-        let equirect_to_cubemap_descriptor_layout = DescriptorSetLayout::builder(device.clone())
-            .binding(
-                0,
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                1,
-                vk::ShaderStageFlags::COMPUTE,
-                vk::DescriptorBindingFlags::empty(),
-            )
-            .binding(
-                1,
-                vk::DescriptorType::STORAGE_IMAGE,
-                1,
-                vk::ShaderStageFlags::COMPUTE,
-                vk::DescriptorBindingFlags::empty(),
-            )
-            .build();
+        let equirect_to_cubemap_descriptor_layout =
+            DescriptorSetLayout::builder(render_context.device.clone())
+                .binding(
+                    0,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    1,
+                    vk::ShaderStageFlags::COMPUTE,
+                    vk::DescriptorBindingFlags::empty(),
+                )
+                .binding(
+                    1,
+                    vk::DescriptorType::STORAGE_IMAGE,
+                    1,
+                    vk::ShaderStageFlags::COMPUTE,
+                    vk::DescriptorBindingFlags::empty(),
+                )
+                .build();
 
         let equirect_to_cubemap_pool_sizes = [
             vk::DescriptorPoolSize::default()
@@ -526,8 +524,11 @@ impl Renderer {
                 .ty(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1),
         ];
-        let equirect_to_cubemap_pool =
-            DescriptorPool::new(device.clone(), 1, &equirect_to_cubemap_pool_sizes);
+        let equirect_to_cubemap_pool = DescriptorPool::new(
+            render_context.device.clone(),
+            1,
+            &equirect_to_cubemap_pool_sizes,
+        );
         let equirect_to_cubemap_descriptor_set =
             equirect_to_cubemap_pool.allocate(&equirect_to_cubemap_descriptor_layout, 0);
 
@@ -546,9 +547,13 @@ impl Renderer {
                 &cubemap_image_view,
                 &sampler,
             )
-            .update(device.clone(), equirect_to_cubemap_descriptor_set);
+            .update(
+                render_context.device.clone(),
+                equirect_to_cubemap_descriptor_set,
+            );
 
-        let cubemap_image_encoder = Encoder::begin_single_time(device.clone(), &adapter);
+        let cubemap_image_encoder =
+            Encoder::begin_single_time(render_context.device.clone(), &render_context.adapter);
         Image::transition_layout(
             &cubemap_image_encoder,
             cubemap_image.handle,
@@ -565,7 +570,7 @@ impl Renderer {
                 c"main",
             )
             .descriptor_set_layouts(&[equirect_to_cubemap_descriptor_layout.vk_layout])
-            .build_compute_pipeline(device.clone());
+            .build_compute_pipeline(render_context.device.clone());
 
         cubemap_image_encoder.cmd_bind_pipeline(
             vk::PipelineBindPoint::COMPUTE,
@@ -592,7 +597,7 @@ impl Renderer {
             1,
             1,
         );
-        cubemap_image_encoder.end_single_time(device.graphics_queue);
+        cubemap_image_encoder.end_single_time(render_context.device.graphics_queue);
 
         let pipeline_builder = PipelineBuilder::default()
             .vertex_input(&binding_descriptions, &attribute_descriptions)
@@ -608,7 +613,7 @@ impl Renderer {
                 vk::FrontFace::COUNTER_CLOCKWISE,
                 false,
             )
-            .multisample_state(msaa_samples)
+            .multisample_state(render_context.swapchain.msaa_samples)
             .color_blend_state(vk::ColorComponentFlags::RGBA)
             .formats(color_format, vk::Format::D32_SFLOAT_S8_UINT);
 
@@ -632,7 +637,7 @@ impl Renderer {
             .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .descriptor_set_layouts(&[pbr_descriptor_layout.vk_layout])
             .push_constant_ranges(&[push_constant_range])
-            .build_graphics_pipeline(device.clone());
+            .build_graphics_pipeline(render_context.device.clone());
 
         let light_pipeline = pipeline_builder
             .clone()
@@ -648,7 +653,7 @@ impl Renderer {
             )
             .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .descriptor_set_layouts(&[light_descriptor_layout.vk_layout])
-            .build_graphics_pipeline(device.clone());
+            .build_graphics_pipeline(render_context.device.clone());
 
         let blit_pipeline = pipeline_builder
             .shader_stage(
@@ -663,18 +668,9 @@ impl Renderer {
             )
             .descriptor_set_layouts(&[blit_descriptor_layout.vk_layout])
             .push_constant_ranges(&[push_constant_range])
-            .build_graphics_pipeline(device.clone());
-
-        let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
-            Self::create_sync_objects(device.clone(), swapchain.images.len());
+            .build_graphics_pipeline(render_context.device.clone());
 
         Self {
-            swapchain,
-            device,
-            adapter,
-            surface,
-            instance,
-
             _descriptor_pools: descriptor_pools,
 
             _pbr_descriptor_layout: pbr_descriptor_layout,
@@ -691,8 +687,6 @@ impl Renderer {
             light_pipeline,
             blit_pipeline,
 
-            encoder,
-
             _images: images,
             _image_views: image_views,
 
@@ -706,12 +700,7 @@ impl Renderer {
 
             uniform_buffers,
 
-            image_available_semaphores,
-            render_finished_semaphores,
-            in_flight_fences,
             frame_in_flight: 0,
-
-            msaa_samples,
 
             framebuffer_resized: false,
             width,
@@ -725,6 +714,8 @@ impl Renderer {
             timer: Instant::now(),
 
             env_index,
+
+            render_context,
         }
     }
 
@@ -799,44 +790,19 @@ impl Renderer {
         uniform_buffers
     }
 
-    fn create_sync_objects(
-        device: Arc<Device>,
-        swapchain_image_count: usize,
-    ) -> (Vec<sync::Semaphore>, Vec<sync::Semaphore>, Vec<sync::Fence>) {
-        let mut image_available_semaphores: Vec<sync::Semaphore> =
-            Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut render_finished_semaphores: Vec<sync::Semaphore> =
-            Vec::with_capacity(swapchain_image_count);
-        let mut in_flight_fences: Vec<sync::Fence> = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            image_available_semaphores.push(sync::Semaphore::new(device.clone()));
-            in_flight_fences.push(sync::Fence::new(device.clone(), true));
-        }
-        for _ in 0..swapchain_image_count {
-            render_finished_semaphores.push(sync::Semaphore::new(device.clone()));
-        }
-
-        (
-            image_available_semaphores,
-            render_finished_semaphores,
-            in_flight_fences,
-        )
-    }
-
     fn record_command_buffer(&mut self, swapchain_image_index: u32) {
         let viewport = vk::Viewport::default()
             .x(0.0)
             .y(0.0)
-            .width(self.swapchain.extent.width as f32)
-            .height(self.swapchain.extent.height as f32)
+            .width(self.render_context.swapchain.extent.width as f32)
+            .height(self.render_context.swapchain.extent.height as f32)
             .min_depth(0.0)
             .max_depth(1.0);
         let viewports = [viewport];
 
         let scissor = vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
-            extent: self.swapchain.extent,
+            extent: self.render_context.swapchain.extent,
         };
         let scissors = [scissor];
 
@@ -846,11 +812,11 @@ impl Renderer {
             -0.3,
         ));
 
-        self.encoder.begin(self.frame_in_flight);
+        self.render_context.encoder.begin(self.frame_in_flight);
 
         Image::transition_layout(
-            &self.encoder,
-            self.swapchain.images[swapchain_image_index as usize],
+            &self.render_context.encoder,
+            self.render_context.swapchain.images[swapchain_image_index as usize],
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             1,
@@ -864,10 +830,12 @@ impl Renderer {
         };
 
         let color_attachment = vk::RenderingAttachmentInfo::default()
-            .image_view(self.swapchain.color_image_view.handle)
+            .image_view(self.render_context.swapchain.color_image_view.handle)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .resolve_mode(vk::ResolveModeFlags::AVERAGE)
-            .resolve_image_view(self.swapchain.image_views[swapchain_image_index as usize])
+            .resolve_image_view(
+                self.render_context.swapchain.image_views[swapchain_image_index as usize],
+            )
             .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -882,7 +850,7 @@ impl Renderer {
         };
 
         let depth_attachment = vk::RenderingAttachmentInfo::default()
-            .image_view(self.swapchain.depth_image_view.handle)
+            .image_view(self.render_context.swapchain.depth_image_view.handle)
             .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -892,26 +860,28 @@ impl Renderer {
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: vk::Extent2D {
-                    width: self.swapchain.extent.width,
-                    height: self.swapchain.extent.height,
+                    width: self.render_context.swapchain.extent.width,
+                    height: self.render_context.swapchain.extent.height,
                 },
             })
             .layer_count(1)
             .color_attachments(&color_attachments)
             .depth_attachment(&depth_attachment);
 
-        self.encoder.cmd_begin_rendering(&rendering_info);
+        self.render_context
+            .encoder
+            .cmd_begin_rendering(&rendering_info);
 
-        self.encoder.cmd_set_viewport(0, &viewports);
-        self.encoder.cmd_set_scissor(0, &scissors);
+        self.render_context.encoder.cmd_set_viewport(0, &viewports);
+        self.render_context.encoder.cmd_set_scissor(0, &scissors);
 
         // Blit
-        self.encoder.cmd_bind_pipeline(
+        self.render_context.encoder.cmd_bind_pipeline(
             vk::PipelineBindPoint::GRAPHICS,
             self.blit_pipeline.vk_pipeline,
         );
 
-        self.encoder.cmd_bind_descriptor_sets(
+        self.render_context.encoder.cmd_bind_descriptor_sets(
             vk::PipelineBindPoint::GRAPHICS,
             self.blit_pipeline.layout,
             0,
@@ -921,25 +891,28 @@ impl Renderer {
 
         self.update_push_constants();
 
-        self.encoder.cmd_push_constants(
+        self.render_context.encoder.cmd_push_constants(
             self.blit_pipeline.layout,
             vk::ShaderStageFlags::ALL,
             0,
             bytemuck::bytes_of(&[self.push_constant_data]),
         );
 
-        self.encoder.cmd_draw(3, 1, 0, 0);
+        self.render_context.encoder.cmd_draw(3, 1, 0, 0);
 
         // PBR
-        self.encoder.cmd_bind_pipeline(
+        self.render_context.encoder.cmd_bind_pipeline(
             vk::PipelineBindPoint::GRAPHICS,
             self.pbr_pipeline.vk_pipeline,
         );
 
         for (primitive_index, primitive) in self.primitives.iter().enumerate() {
-            self.encoder
-                .cmd_bind_vertex_buffers(0, &[self.vertex_buffer.vk_buffer], &[0]);
-            self.encoder.cmd_bind_index_buffer(
+            self.render_context.encoder.cmd_bind_vertex_buffers(
+                0,
+                &[self.vertex_buffer.vk_buffer],
+                &[0],
+            );
+            self.render_context.encoder.cmd_bind_index_buffer(
                 self.index_buffer.vk_buffer,
                 vk::DeviceSize::default(),
                 vk::IndexType::UINT32,
@@ -947,7 +920,7 @@ impl Renderer {
 
             self.update_uniform_buffer(primitive_index, light_pos_transform, false);
 
-            self.encoder.cmd_bind_descriptor_sets(
+            self.render_context.encoder.cmd_bind_descriptor_sets(
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pbr_pipeline.layout,
                 0,
@@ -955,27 +928,35 @@ impl Renderer {
                 &[],
             );
 
-            self.encoder.cmd_push_constants(
+            self.render_context.encoder.cmd_push_constants(
                 self.blit_pipeline.layout,
                 vk::ShaderStageFlags::ALL,
                 0,
                 bytemuck::bytes_of(&[self.push_constant_data]),
             );
 
-            self.encoder
-                .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+            self.render_context.encoder.cmd_draw_indexed(
+                primitive.index_count,
+                1,
+                primitive.first_index,
+                0,
+                0,
+            );
         }
 
         // Light
-        self.encoder.cmd_bind_pipeline(
+        self.render_context.encoder.cmd_bind_pipeline(
             vk::PipelineBindPoint::GRAPHICS,
             self.light_pipeline.vk_pipeline,
         );
 
         for (primitive_index, primitive) in self.light_primitives.iter().enumerate() {
-            self.encoder
-                .cmd_bind_vertex_buffers(0, &[self.light_vertex_buffer.vk_buffer], &[0]);
-            self.encoder.cmd_bind_index_buffer(
+            self.render_context.encoder.cmd_bind_vertex_buffers(
+                0,
+                &[self.light_vertex_buffer.vk_buffer],
+                &[0],
+            );
+            self.render_context.encoder.cmd_bind_index_buffer(
                 self.light_index_buffer.vk_buffer,
                 vk::DeviceSize::default(),
                 vk::IndexType::UINT32,
@@ -983,7 +964,7 @@ impl Renderer {
 
             self.update_uniform_buffer(primitive_index, light_pos_transform, true);
 
-            self.encoder.cmd_bind_descriptor_sets(
+            self.render_context.encoder.cmd_bind_descriptor_sets(
                 vk::PipelineBindPoint::GRAPHICS,
                 self.light_pipeline.layout,
                 0,
@@ -991,22 +972,27 @@ impl Renderer {
                 &[],
             );
 
-            self.encoder
-                .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+            self.render_context.encoder.cmd_draw_indexed(
+                primitive.index_count,
+                1,
+                primitive.first_index,
+                0,
+                0,
+            );
         }
 
-        self.encoder.cmd_end_rendering();
+        self.render_context.encoder.cmd_end_rendering();
 
         Image::transition_layout(
-            &self.encoder,
-            self.swapchain.images[swapchain_image_index as usize],
+            &self.render_context.encoder,
+            self.render_context.swapchain.images[swapchain_image_index as usize],
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::PRESENT_SRC_KHR,
             1,
             1,
         );
 
-        self.encoder.end();
+        self.render_context.encoder.end();
     }
 
     fn update_uniform_buffer(
@@ -1079,18 +1065,17 @@ impl Renderer {
     }
 
     pub fn draw_frame(&mut self) {
-        unsafe_vk_try!(self.device.ash_device.wait_for_fences(
-            &[self.in_flight_fences[self.frame_in_flight].vk_fence],
+        unsafe_vk_try!(self.render_context.device.ash_device.wait_for_fences(
+            &[self.render_context.in_flight_fences[self.frame_in_flight].vk_fence],
             true,
             u64::MAX,
         ));
 
         let image_index: u32;
 
-        match self
-            .swapchain
-            .acquire_next_image(&self.image_available_semaphores[self.frame_in_flight])
-        {
+        match self.render_context.swapchain.acquire_next_image(
+            &self.render_context.image_available_semaphores[self.frame_in_flight],
+        ) {
             None => {
                 warn!("Recreating swapchain...");
                 self.recreate_swapchain();
@@ -1100,28 +1085,36 @@ impl Renderer {
         }
 
         unsafe_vk_try!(
-            self.device
+            self.render_context
+                .device
                 .ash_device
-                .reset_fences(&[self.in_flight_fences[self.frame_in_flight].vk_fence])
+                .reset_fences(&[
+                    self.render_context.in_flight_fences[self.frame_in_flight].vk_fence
+                ])
         );
 
-        unsafe_vk_try!(self.device.ash_device.reset_command_buffer(
-            self.encoder.command_buffers[self.frame_in_flight],
+        unsafe_vk_try!(self.render_context.device.ash_device.reset_command_buffer(
+            self.render_context.encoder.command_buffers[self.frame_in_flight],
             vk::CommandBufferResetFlags::empty(),
         ));
 
         self.record_command_buffer(image_index);
 
-        let signal_semaphore = &self.render_finished_semaphores[image_index as usize];
+        let signal_semaphore =
+            &self.render_context.render_finished_semaphores[image_index as usize];
 
-        self.device.submit_graphics(
-            self.encoder.command_buffers[self.frame_in_flight],
-            &self.image_available_semaphores[self.frame_in_flight],
+        self.render_context.device.submit_graphics(
+            self.render_context.encoder.command_buffers[self.frame_in_flight],
+            &self.render_context.image_available_semaphores[self.frame_in_flight],
             signal_semaphore,
-            &self.in_flight_fences[self.frame_in_flight],
+            &self.render_context.in_flight_fences[self.frame_in_flight],
         );
 
-        if !self.swapchain.present(image_index, signal_semaphore) {
+        if !self
+            .render_context
+            .swapchain
+            .present(image_index, signal_semaphore)
+        {
             self.recreate_swapchain();
         }
 
@@ -1134,19 +1127,19 @@ impl Renderer {
     }
 
     fn recreate_swapchain(&mut self) {
-        self.swapchain.recreate(
-            &self.instance,
-            &self.adapter,
-            &self.surface,
+        self.render_context.swapchain.recreate(
+            &self.render_context.instance,
+            &self.render_context.adapter,
+            &self.render_context.surface,
             self.width,
             self.height,
-            self.msaa_samples,
+            self.render_context.swapchain.msaa_samples,
         );
     }
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
-        self.device.wait_idle();
+        self.render_context.device.wait_idle();
     }
 }
