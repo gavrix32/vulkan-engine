@@ -3,6 +3,7 @@ use crate::vulkan::buffer::Buffer;
 use crate::vulkan::device::Device;
 use crate::vulkan::image::{ImageView, Sampler};
 use ash::vk;
+use log::error;
 use std::sync::Arc;
 
 pub struct DescriptorSetLayout {
@@ -100,15 +101,7 @@ impl<'a> DescriptorWriter<'a> {
         let write = vk::WriteDescriptorSet::default()
             .dst_binding(binding)
             .descriptor_type(ty)
-            .buffer_info(unsafe {
-                std::slice::from_raw_parts(
-                    self.buffer_infos
-                        .last()
-                        .expect("No buffer info to create buffer write descriptor set")
-                        as *const _,
-                    1,
-                )
-            });
+            .descriptor_count(1);
 
         self.writes.push(write);
         self
@@ -131,15 +124,7 @@ impl<'a> DescriptorWriter<'a> {
         let write = vk::WriteDescriptorSet::default()
             .dst_binding(binding)
             .descriptor_type(ty)
-            .image_info(unsafe {
-                std::slice::from_raw_parts(
-                    self.image_infos
-                        .last()
-                        .expect("No image info to create image write descriptor set")
-                        as *const _,
-                    1,
-                )
-            });
+            .descriptor_count(1);
 
         self.writes.push(write);
         self
@@ -153,8 +138,6 @@ impl<'a> DescriptorWriter<'a> {
         image_views: &'a [ImageView],
         sampler: &'a Sampler,
     ) -> Self {
-        let info_start_index = self.image_infos.len();
-
         for i in 0..image_views.len() {
             let image_info = vk::DescriptorImageInfo::default()
                 .image_layout(layout)
@@ -165,14 +148,8 @@ impl<'a> DescriptorWriter<'a> {
 
         let write = vk::WriteDescriptorSet::default()
             .dst_binding(binding)
-            .descriptor_count(image_views.len() as u32)
             .descriptor_type(ty)
-            .image_info(unsafe {
-                std::slice::from_raw_parts(
-                    self.image_infos.as_ptr().add(info_start_index),
-                    image_views.len(),
-                )
-            });
+            .descriptor_count(image_views.len() as u32);
 
         self.writes.push(write);
         self
@@ -181,6 +158,29 @@ impl<'a> DescriptorWriter<'a> {
     pub fn update(mut self, device: Arc<Device>, set: vk::DescriptorSet) {
         for write in &mut self.writes {
             write.dst_set = set;
+        }
+
+        let mut buffer_index = 0;
+        let mut image_index = 0;
+
+        for write in &mut self.writes {
+            match write.descriptor_type {
+                vk::DescriptorType::UNIFORM_BUFFER
+                | vk::DescriptorType::STORAGE_BUFFER
+                | vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC
+                | vk::DescriptorType::STORAGE_BUFFER_DYNAMIC => {
+                    write.p_buffer_info = &self.buffer_infos[buffer_index];
+                    buffer_index += write.descriptor_count as usize;
+                }
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER
+                | vk::DescriptorType::SAMPLED_IMAGE
+                | vk::DescriptorType::STORAGE_IMAGE
+                | vk::DescriptorType::INPUT_ATTACHMENT => {
+                    write.p_image_info = &self.image_infos[image_index];
+                    image_index += write.descriptor_count as usize;
+                }
+                _ => error!("Unknown descriptor type"),
+            }
         }
 
         unsafe {

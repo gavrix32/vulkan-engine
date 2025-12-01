@@ -1,6 +1,7 @@
 import common;
 
-[vk::binding(1, 0)] Sampler2D textures[];
+[vk::binding(1, 0)] Sampler2D env_texture;
+[vk::binding(2, 0)] Sampler2D textures[];
 
 struct PushConstants {
     float2 resolution;
@@ -17,7 +18,7 @@ struct VertexInput {
     float3 in_normal;
     float4 in_tangent;
     float2 in_tex_coord;
-    uint3 in_material;
+    uint3 in_material_indices;
 };
 
 struct VertexOutput {
@@ -27,7 +28,7 @@ struct VertexOutput {
     float3 world_tangent;
     float3 world_bitangent;
     float3 world_normal;
-    uint3 material;
+    uint3 material_indices;
 };
 
 [shader("vertex")]
@@ -44,7 +45,7 @@ VertexOutput vertex_main(VertexInput input) {
     output.world_normal = normalize(mul(float3x3(uniforms.model), input.in_normal));
     output.world_bitangent = normalize(cross(output.world_normal, output.world_tangent) * input.in_tangent.w);
 
-    output.material = input.in_material;
+    output.material_indices = input.in_material_indices;
 
     return output;
 }
@@ -105,9 +106,9 @@ void fragment_main(
     float4 sv_position : SV_Position,
     VertexOutput input,
 ) {
-    uint albedo_index = input.material[0];
-    uint normal_index = input.material[1];
-    uint metallic_roughness_index = input.material[2];
+    uint albedo_index = input.material_indices[0];
+    uint normal_index = input.material_indices[1];
+    uint metallic_roughness_index = input.material_indices[2];
 
     float3 albedo = textures[albedo_index].Sample(input.tex_coord).rgb;
 
@@ -174,7 +175,7 @@ void fragment_main(
     float gamma = 2.2;
 
     float2 sph_uv = sample_env(R);
-    float3 irradiance = textures[uniforms.env_index].SampleLevel(sph_uv, 8.0).rgb;
+    float3 irradiance = env_texture.SampleLevel(sph_uv, 8.0).rgb;
 
     irradiance = float3(1.0) - exp(-irradiance * exposure);
 
@@ -182,7 +183,7 @@ void fragment_main(
 
     float lod = roughness * MAX_REFLECTION_LOD;
 
-    float3 prefiltered_color = textures[uniforms.env_index].SampleLevel(sample_env(R), lod).rgb;
+    float3 prefiltered_color = env_texture.SampleLevel(sample_env(R), lod).rgb;
 
     prefiltered_color = float3(1.0) - exp(-prefiltered_color * exposure);
 

@@ -7,7 +7,7 @@ pub struct Vertex {
     pub normal: [f32; 3],
     pub tangent: [f32; 4],
     pub tex_coord: [f32; 2],
-    pub material: [u32; 3],
+    pub material_indices: [u32; 3],
 }
 
 impl Vertex {
@@ -44,7 +44,7 @@ impl Vertex {
                 .binding(0)
                 .location(4)
                 .format(vk::Format::R32G32B32_UINT)
-                .offset(offset_of!(Vertex, material) as u32),
+                .offset(offset_of!(Vertex, material_indices) as u32),
         ]
     }
 }

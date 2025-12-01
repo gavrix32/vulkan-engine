@@ -53,7 +53,7 @@ impl<'a> Geometry for MeshView<'a> {
     }
 }
 
-pub(crate) struct PrimitiveInfo {
+pub(crate) struct Primitive {
     pub(crate) first_index: u32,
     pub(crate) index_count: u32,
     pub(crate) model_matrix: Mat4,
@@ -64,7 +64,7 @@ fn traverse_node(
     buffers: &Vec<buffer::Data>,
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
-    primitives: &mut Vec<PrimitiveInfo>,
+    primitives: &mut Vec<Primitive>,
     parent_transform: Mat4,
 ) {
     info!("Node: {}", node.name().unwrap_or("Unnamed"));
@@ -120,7 +120,7 @@ fn traverse_node(
                     normal: [norm[0], norm[1], norm[2]],
                     tangent: [0.0; 4],
                     tex_coord: tex_coords.get(i).copied().unwrap_or([0.0, 0.0]),
-                    material: [
+                    material_indices: [
                         albedo_index.unwrap_or(0) as u32,
                         normal_index.unwrap_or(0) as u32,
                         metallic_roughness_index.unwrap_or(0) as u32,
@@ -128,7 +128,7 @@ fn traverse_node(
                 });
             }
 
-            let primitive_info = PrimitiveInfo {
+            let primitive_info = Primitive {
                 first_index,
                 index_count,
                 model_matrix,
@@ -147,7 +147,7 @@ pub(crate) fn parse_model(
     buffers: &Vec<buffer::Data>,
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
-    primitives: &mut Vec<PrimitiveInfo>,
+    primitives: &mut Vec<Primitive>,
 ) {
     for scene in document.scenes() {
         info!("Scene: {}", scene.name().unwrap_or("Unnamed"));
