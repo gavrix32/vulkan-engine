@@ -294,10 +294,10 @@ impl Default for ImageBuilder<'_> {
 }
 
 impl<'a> ImageBuilder<'a> {
-    pub fn image_type(mut self, image_type: vk::ImageType) -> Self {
-        self.image_type = image_type;
-        self
-    }
+    // pub fn image_type(mut self, image_type: vk::ImageType) -> Self {
+    //     self.image_type = image_type;
+    //     self
+    // }
 
     pub fn flags(mut self, flags: vk::ImageCreateFlags) -> Self {
         self.flags = flags;

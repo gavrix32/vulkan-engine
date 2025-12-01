@@ -1,8 +1,6 @@
-use crate::camera::Camera;
 use crate::context::RenderContext;
 use crate::mesh::{Mesh, Primitive};
 use crate::parser;
-use crate::scene::Scene;
 use crate::vertex::Vertex;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
@@ -26,7 +24,63 @@ impl AssetManager {
         Self { ctx }
     }
 
-    pub fn load_gltf<S: AsRef<[u8]>>(&self, slice: S) -> Scene {
+    // pub fn load_texture_rgba8<S: AsRef<[u8]>>(&self, slice: S) -> (Arc<Image>, ImageView) {
+    //     let image_reader = ImageReader::new(Cursor::new(slice))
+    //         .with_guessed_format()
+    //         .expect("Failed to guess format")
+    //         .decode()
+    //         .expect("Failed to decode image")
+    //         .to_rgba8();
+    //     let bytes = bytemuck::cast_slice(image_reader.as_raw());
+    //
+    //     let image = create_image(
+    //         &self.ctx.instance,
+    //         &self.ctx.adapter,
+    //         self.ctx.device.clone(),
+    //         vk::Format::R8G8B8A8_SRGB,
+    //         image_reader.width(),
+    //         image_reader.height(),
+    //         bytes,
+    //     );
+    //     let image_view = ImageView::new(
+    //         self.ctx.device.clone(),
+    //         image.clone(),
+    //         vk::ImageViewType::TYPE_2D,
+    //         vk::ImageAspectFlags::COLOR,
+    //     );
+    //
+    //     (image, image_view)
+    // }
+
+    pub fn load_texture_rgba32f<S: AsRef<[u8]>>(&self, slice: S) -> (Arc<Image>, ImageView) {
+        let image_reader = ImageReader::new(Cursor::new(slice))
+            .with_guessed_format()
+            .expect("Failed to guess format")
+            .decode()
+            .expect("Failed to decode image")
+            .to_rgba32f();
+        let bytes = bytemuck::cast_slice(image_reader.as_raw());
+
+        let image = create_image(
+            &self.ctx.instance,
+            &self.ctx.adapter,
+            self.ctx.device.clone(),
+            vk::Format::R32G32B32A32_SFLOAT,
+            image_reader.width(),
+            image_reader.height(),
+            bytes,
+        );
+        let image_view = ImageView::new(
+            self.ctx.device.clone(),
+            image.clone(),
+            vk::ImageViewType::TYPE_2D,
+            vk::ImageAspectFlags::COLOR,
+        );
+
+        (image, image_view)
+    }
+
+    pub fn load_gltf<S: AsRef<[u8]>>(&self, slice: S) -> Mesh {
         info!("Importing model");
         let (document, buffers_data, images_data) =
             gltf::import_slice(slice).expect("Failed to load model");
@@ -124,25 +178,14 @@ impl AssetManager {
             .expect("Failed to decode image")
             .to_rgba8();
         let placeholder_bytes = bytemuck::cast_slice(placeholder_image_reader.as_raw());
-        let placeholder_image = Arc::new(
-            ImageBuilder::default()
-                .size(
-                    placeholder_image_reader.width(),
-                    placeholder_image_reader.height(),
-                )
-                .mipmapping(true)
-                .format(vk::Format::R8G8B8A8_SRGB)
-                .usage(
-                    vk::ImageUsageFlags::TRANSFER_SRC
-                        | vk::ImageUsageFlags::TRANSFER_DST
-                        | vk::ImageUsageFlags::SAMPLED,
-                )
-                .bytes(placeholder_bytes)
-                .build(
-                    &self.ctx.instance,
-                    &self.ctx.adapter,
-                    self.ctx.device.clone(),
-                ),
+        let placeholder_image = create_image(
+            &self.ctx.instance,
+            &self.ctx.adapter,
+            self.ctx.device.clone(),
+            vk::Format::R8G8B8A8_SRGB,
+            placeholder_image_reader.width(),
+            placeholder_image_reader.height(),
+            placeholder_bytes,
         );
 
         images.push(placeholder_image.clone());
@@ -173,19 +216,12 @@ impl AssetManager {
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
 
-        let mut meshes = Vec::new();
-
-        meshes.push(Mesh {
+        Mesh {
             vertex_buffer,
             index_buffer,
             primitives,
             images,
             image_views,
-        });
-
-        Scene {
-            camera: Camera::default(),
-            meshes,
         }
     }
 }
@@ -231,4 +267,28 @@ fn create_buffer<T: Copy>(
     staging_buffer.copy(graphics_queue, adapter, &vertex_buffer);
 
     vertex_buffer
+}
+
+fn create_image(
+    instance: &Instance,
+    adapter: &Adapter,
+    device: Arc<Device>,
+    format: vk::Format,
+    width: u32,
+    height: u32,
+    bytes: &[u8],
+) -> Arc<Image> {
+    Arc::new(
+        ImageBuilder::default()
+            .size(width, height)
+            .mipmapping(true)
+            .format(format)
+            .usage(
+                vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::SAMPLED,
+            )
+            .bytes(bytes)
+            .build(&instance, &adapter, device.clone()),
+    )
 }

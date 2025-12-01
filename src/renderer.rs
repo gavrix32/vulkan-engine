@@ -1,4 +1,5 @@
 use crate::asset::AssetManager;
+use crate::camera::Camera;
 use crate::context::RenderContext;
 use crate::mesh::Mesh;
 use crate::scene::Scene;
@@ -18,10 +19,8 @@ use ash::util::Align;
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
-use image::ImageReader;
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -70,7 +69,6 @@ pub struct Renderer {
     uniform_buffers: Vec<Vec<Buffer>>,
 
     pub scene: Scene,
-    pub light_scene: Scene,
 
     _sampler: Sampler,
 
@@ -141,8 +139,14 @@ impl Renderer {
 
         let asset = AssetManager::new(ctx.clone());
 
-        let scene = asset.load_gltf(include_bytes!("../resources/models/sponza.glb"));
-        let light_scene = asset.load_gltf(include_bytes!("../resources/models/Box.glb"));
+        let mut meshes = Vec::new();
+        meshes.push(asset.load_gltf(include_bytes!("../resources/models/sponza.glb")));
+        meshes.push(asset.load_gltf(include_bytes!("../resources/models/Box.glb")));
+
+        let scene = Scene {
+            meshes,
+            camera: Camera::default(),
+        };
 
         let uniform_buffers =
             Self::create_uniform_buffers(&ctx.instance, &ctx.adapter, ctx.device.clone());
@@ -154,33 +158,9 @@ impl Renderer {
             vk::LOD_CLAMP_NONE,
         );
 
-        let env_raw_bytes = include_bytes!("../resources/textures/the_sky_is_on_fire_4k.hdr");
-        let env_image_reader = ImageReader::new(Cursor::new(env_raw_bytes))
-            .with_guessed_format()
-            .expect("Failed to guess format")
-            .decode()
-            .expect("Failed to decode image")
-            .to_rgba32f();
-        let env_bytes = bytemuck::cast_slice(env_image_reader.as_raw());
-        let env_image = Arc::new(
-            ImageBuilder::default()
-                .size(env_image_reader.width(), env_image_reader.height())
-                .mipmapping(true)
-                .format(vk::Format::R32G32B32A32_SFLOAT)
-                .usage(
-                    vk::ImageUsageFlags::TRANSFER_SRC
-                        | vk::ImageUsageFlags::TRANSFER_DST
-                        | vk::ImageUsageFlags::SAMPLED,
-                )
-                .bytes(env_bytes)
-                .build(&ctx.instance, &ctx.adapter, ctx.device.clone()),
-        );
-        let env_image_view = ImageView::new(
-            ctx.device.clone(),
-            env_image.clone(),
-            vk::ImageViewType::TYPE_2D,
-            vk::ImageAspectFlags::COLOR,
-        );
+        let (env_image, env_image_view) = asset.load_texture_rgba32f(include_bytes!(
+            "../resources/textures/the_sky_is_on_fire_4k.hdr"
+        ));
 
         let pbr_descriptor_layout = DescriptorSetLayout::builder(ctx.device.clone())
             .binding(
@@ -200,7 +180,7 @@ impl Renderer {
             .binding(
                 2,
                 vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                scene.meshes.last().unwrap().images.len() as u32,
+                scene.meshes[0].images.len() as u32,
                 vk::ShaderStageFlags::FRAGMENT,
                 vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
                     | vk::DescriptorBindingFlags::PARTIALLY_BOUND
@@ -243,7 +223,7 @@ impl Renderer {
                 .descriptor_count(2),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(scene.meshes.last().unwrap().images.len() as u32),
+                .descriptor_count(scene.meshes[0].images.len() as u32),
         ];
 
         let mut descriptor_pools = Vec::new();
@@ -254,10 +234,7 @@ impl Renderer {
         let mut pbr_descriptor_sets = Vec::new();
         for frame in 0..MAX_FRAMES_IN_FLIGHT {
             let pool = &descriptor_pools[frame];
-            let set = pool.allocate(
-                &pbr_descriptor_layout,
-                scene.meshes.last().unwrap().images.len() as u32,
-            );
+            let set = pool.allocate(&pbr_descriptor_layout, scene.meshes[0].images.len() as u32);
 
             DescriptorWriter::default()
                 .buffer(
@@ -276,7 +253,7 @@ impl Renderer {
                     2,
                     vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    &scene.meshes.last().unwrap().image_views,
+                    &scene.meshes[0].image_views,
                     &sampler,
                 )
                 .update(ctx.device.clone(), set);
@@ -533,7 +510,6 @@ impl Renderer {
             _env_image: env_image,
 
             scene,
-            light_scene,
 
             uniform_buffers,
 
@@ -697,41 +673,42 @@ impl Renderer {
             self.pbr_pipeline.vk_pipeline,
         );
 
-        for mesh in &self.scene.meshes {
-            for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
-                self.encoder
-                    .cmd_bind_vertex_buffers(0, &[mesh.vertex_buffer.vk_buffer], &[0]);
-                self.encoder.cmd_bind_index_buffer(
-                    mesh.index_buffer.vk_buffer,
-                    vk::DeviceSize::default(),
-                    vk::IndexType::UINT32,
-                );
+        for (primitive_index, primitive) in self.scene.meshes[0].primitives.iter().enumerate() {
+            self.encoder.cmd_bind_vertex_buffers(
+                0,
+                &[self.scene.meshes[0].vertex_buffer.vk_buffer],
+                &[0],
+            );
+            self.encoder.cmd_bind_index_buffer(
+                self.scene.meshes[0].index_buffer.vk_buffer,
+                vk::DeviceSize::default(),
+                vk::IndexType::UINT32,
+            );
 
-                self.update_uniform_buffer(mesh, primitive_index, light_pos_transform, false);
+            self.update_uniform_buffer(
+                &self.scene.meshes[0],
+                primitive_index,
+                light_pos_transform,
+                false,
+            );
 
-                self.encoder.cmd_bind_descriptor_sets(
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.pbr_pipeline.layout,
-                    0,
-                    &[self.pbr_descriptor_sets[self.frame_in_flight]],
-                    &[],
-                );
+            self.encoder.cmd_bind_descriptor_sets(
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pbr_pipeline.layout,
+                0,
+                &[self.pbr_descriptor_sets[self.frame_in_flight]],
+                &[],
+            );
 
-                self.encoder.cmd_push_constants(
-                    self.blit_pipeline.layout,
-                    vk::ShaderStageFlags::ALL,
-                    0,
-                    bytemuck::bytes_of(&[self.push_constant_data]),
-                );
+            self.encoder.cmd_push_constants(
+                self.blit_pipeline.layout,
+                vk::ShaderStageFlags::ALL,
+                0,
+                bytemuck::bytes_of(&[self.push_constant_data]),
+            );
 
-                self.encoder.cmd_draw_indexed(
-                    primitive.index_count,
-                    1,
-                    primitive.first_index,
-                    0,
-                    0,
-                );
-            }
+            self.encoder
+                .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
         }
 
         // Light
@@ -740,34 +717,35 @@ impl Renderer {
             self.light_pipeline.vk_pipeline,
         );
 
-        for mesh in &self.light_scene.meshes {
-            for (primitive_index, primitive) in mesh.primitives.iter().enumerate() {
-                self.encoder
-                    .cmd_bind_vertex_buffers(0, &[mesh.vertex_buffer.vk_buffer], &[0]);
-                self.encoder.cmd_bind_index_buffer(
-                    mesh.index_buffer.vk_buffer,
-                    vk::DeviceSize::default(),
-                    vk::IndexType::UINT32,
-                );
+        for (primitive_index, primitive) in self.scene.meshes[1].primitives.iter().enumerate() {
+            self.encoder.cmd_bind_vertex_buffers(
+                0,
+                &[self.scene.meshes[1].vertex_buffer.vk_buffer],
+                &[0],
+            );
+            self.encoder.cmd_bind_index_buffer(
+                self.scene.meshes[1].index_buffer.vk_buffer,
+                vk::DeviceSize::default(),
+                vk::IndexType::UINT32,
+            );
 
-                self.update_uniform_buffer(&mesh, primitive_index, light_pos_transform, true);
+            self.update_uniform_buffer(
+                &self.scene.meshes[1],
+                primitive_index,
+                light_pos_transform,
+                true,
+            );
 
-                self.encoder.cmd_bind_descriptor_sets(
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.light_pipeline.layout,
-                    0,
-                    &[self.light_descriptor_sets[self.frame_in_flight]],
-                    &[],
-                );
+            self.encoder.cmd_bind_descriptor_sets(
+                vk::PipelineBindPoint::GRAPHICS,
+                self.light_pipeline.layout,
+                0,
+                &[self.light_descriptor_sets[self.frame_in_flight]],
+                &[],
+            );
 
-                self.encoder.cmd_draw_indexed(
-                    primitive.index_count,
-                    1,
-                    primitive.first_index,
-                    0,
-                    0,
-                );
-            }
+            self.encoder
+                .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
         }
 
         self.encoder.cmd_end_rendering();
