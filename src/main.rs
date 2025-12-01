@@ -1,14 +1,15 @@
+mod asset;
 mod camera;
+mod context;
 mod fps_counter;
 mod input;
-mod loader;
-mod renderer;
-mod state;
-mod vulkan;
-pub mod vertex;
-mod context;
-mod scene;
 mod mesh;
+mod parser;
+mod renderer;
+mod scene;
+mod state;
+mod vertex;
+mod vulkan;
 
 use crate::camera::Camera;
 use crate::fps_counter::FpsCounter;
@@ -69,7 +70,7 @@ fn main() {
         }
 
         if let Some(renderer) = &mut state.renderer {
-            renderer.camera = camera;
+            renderer.scene.camera = camera;
         }
 
         state.update(&mut event_loop);

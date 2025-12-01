@@ -1,3 +1,4 @@
+use crate::mesh::Primitive;
 use crate::vertex::Vertex;
 use glam::Mat4;
 use gltf::{Node, buffer};
@@ -51,12 +52,6 @@ impl<'a> Geometry for MeshView<'a> {
         let idx = self.indices[face * 3 + vert] as usize;
         self.vertices[idx].tangent = [tangent[0], tangent[1], tangent[2], sign];
     }
-}
-
-pub(crate) struct Primitive {
-    pub(crate) first_index: u32,
-    pub(crate) index_count: u32,
-    pub(crate) model_matrix: Mat4,
 }
 
 fn traverse_node(
