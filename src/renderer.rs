@@ -57,13 +57,16 @@ pub struct Renderer {
 
     pub scene: Scene,
 
+    _sampler: Sampler,
+
     _cubemap_image_view: ImageView,
     _cubemap_image: Arc<Image>,
 
-    _sampler: Sampler,
-
     _env_image_view: ImageView,
     _env_image: Arc<Image>,
+
+    _irr_image_view: ImageView,
+    _irr_image: Arc<Image>,
 
     frame_in_flight: usize,
 
@@ -169,6 +172,13 @@ impl Renderer {
             )
             .binding(
                 2,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                1,
+                vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                3,
                 vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 scene.meshes[0].images.len() as u32,
                 vk::ShaderStageFlags::FRAGMENT,
@@ -333,13 +343,135 @@ impl Renderer {
         );
         cubemap_image_encoder.end_single_time(ctx.device.graphics_queue);
 
+        // Irradiance
+
+        let irr_size = 32;
+
+        let irr_image = Arc::new(
+            ImageBuilder::default()
+                .size(irr_size, irr_size)
+                .layers(faces_count)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
+                .flags(vk::ImageCreateFlags::CUBE_COMPATIBLE)
+                .build(&ctx.instance, &ctx.adapter, ctx.device.clone()),
+        );
+
+        let irr_image_array_view = ImageView::new(
+            ctx.device.clone(),
+            irr_image.clone(),
+            vk::ImageViewType::TYPE_2D_ARRAY,
+            vk::ImageAspectFlags::COLOR,
+        );
+
+        let irr_image_view = ImageView::new(
+            ctx.device.clone(),
+            irr_image.clone(),
+            vk::ImageViewType::CUBE,
+            vk::ImageAspectFlags::COLOR,
+        );
+
+        let irr_descriptor_layout =
+            DescriptorSetLayout::builder(ctx.device.clone())
+                .binding(
+                    0,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    1,
+                    vk::ShaderStageFlags::COMPUTE,
+                    vk::DescriptorBindingFlags::empty(),
+                )
+                .binding(
+                    1,
+                    vk::DescriptorType::STORAGE_IMAGE,
+                    1,
+                    vk::ShaderStageFlags::COMPUTE,
+                    vk::DescriptorBindingFlags::empty(),
+                )
+                .build();
+
+        let irr_pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1),
+        ];
+        let irr_pool =
+            DescriptorPool::new(ctx.device.clone(), 1, &irr_pool_sizes);
+        let irr_descriptor_set =
+            irr_pool.allocate(&irr_descriptor_layout, 0);
+
+        DescriptorWriter::default()
+            .image(
+                0,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                &cubemap_image_view,
+                &sampler,
+            )
+            .image(
+                1,
+                vk::DescriptorType::STORAGE_IMAGE,
+                vk::ImageLayout::GENERAL,
+                &irr_image_array_view,
+                &sampler,
+            )
+            .update(ctx.device.clone(), irr_descriptor_set);
+
+        let irr_image_encoder = Encoder::begin_single_time(ctx.device.clone(), &ctx.adapter);
+        Image::transition_layout(
+            &irr_image_encoder,
+            irr_image.handle,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL,
+            1,
+            faces_count,
+        );
+
+        let irr_pipeline = PipelineBuilder::default()
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/irradiance_convolution.spv")),
+                vk::ShaderStageFlags::COMPUTE,
+                c"main",
+            )
+            .descriptor_set_layouts(&[irr_descriptor_layout.vk_layout])
+            .build_compute_pipeline(ctx.device.clone());
+
+        irr_image_encoder.cmd_bind_pipeline(
+            vk::PipelineBindPoint::COMPUTE,
+            irr_pipeline.vk_pipeline,
+        );
+
+        let group_count = (irr_size + 16 - 1) / 16;
+
+        irr_image_encoder.cmd_bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            irr_pipeline.layout,
+            0,
+            &[irr_descriptor_set],
+            &[],
+        );
+
+        irr_image_encoder.cmd_dispatch(group_count, group_count, faces_count);
+
+        Image::transition_layout(
+            &irr_image_encoder,
+            irr_image.handle,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            1,
+            faces_count,
+        );
+        irr_image_encoder.end_single_time(ctx.device.graphics_queue);
+
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(3),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(2),
+                .descriptor_count(3),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(scene.meshes[0].images.len() as u32),
@@ -368,8 +500,15 @@ impl Renderer {
                     &cubemap_image_view,
                     &sampler,
                 )
-                .images(
+                .image(
                     2,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &irr_image_view,
+                    &sampler,
+                )
+                .images(
+                    3,
                     vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                     &scene.meshes[0].image_views,
@@ -515,12 +654,15 @@ impl Renderer {
             light_pipeline,
             skybox_pipeline,
 
+            scene,
+
             _sampler: sampler,
 
             _env_image_view: env_image_view,
             _env_image: env_image,
 
-            scene,
+            _irr_image_view: irr_image_view,
+            _irr_image: irr_image,
 
             _cubemap_image_view: cubemap_image_view,
             _cubemap_image: cubemap_image,

@@ -4,11 +4,10 @@ import common;
 SamplerCube cubemap_texture;
 
 [vk::binding(2, 0)]
-Sampler2D textures[];
+SamplerCube irradiance_texture;
 
-static const float PI = 3.14159265;
-static const float EPSILON = 0.00001;
-static const float MAX_REFLECTION_LOD = 4.0;
+[vk::binding(3, 0)]
+Sampler2D textures[];
 
 struct VertexInput {
     float3 in_position;
@@ -162,12 +161,9 @@ void fragment_main(
 
     float3 R = normalize(reflect(-V, N));
 
-    float exposure = 1.0;
-    float gamma = 2.2;
+    float3 irradiance = irradiance_texture.SampleLevel(N, 0.0).rgb;
 
-    float3 irradiance = cubemap_texture.SampleLevel(R, 8.0).rgb;
-
-    irradiance = float3(1.0) - exp(-irradiance * exposure);
+    //irradiance = float3(1.0) - exp(-irradiance * exposure);
 
     float3 diffuse_IBL = kD * albedo * irradiance;
 
@@ -175,7 +171,7 @@ void fragment_main(
 
     float3 prefiltered_color = cubemap_texture.SampleLevel(R, lod).rgb;
 
-    prefiltered_color = float3(1.0) - exp(-prefiltered_color * exposure);
+    //prefiltered_color = float3(1.0) - exp(-prefiltered_color * exposure);
 
     float3 specular_IBL = prefiltered_color * F0;
 
@@ -191,7 +187,7 @@ void fragment_main(
 
     float3 Lo = Le + L_direct + L_indirect;
 
-    // Lo = pow(Lo, float3(1.0 / gamma));
+    Lo = aces_film(Lo * EXPOSURE);
 
     out_color = float4(Lo, 1.0);
 }

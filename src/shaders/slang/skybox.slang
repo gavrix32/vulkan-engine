@@ -59,5 +59,9 @@ void fragment_main(
     VertexOutput input,
     out float4 out_color : SV_Target0
 ) {
-    out_color = cubemap_texture.SampleLevel(input.uvw, 0.0);
+    float3 color = cubemap_texture.SampleLevel(input.uvw, 0.0).rgb;
+
+    color = aces_film(color * EXPOSURE);
+
+    out_color = float4(color, 1.0);
 }
