@@ -21,7 +21,7 @@ pub struct Image {
     format: vk::Format,
     extent: vk::Extent3D,
     layers: u32,
-    mip_levels: u32,
+    pub mip_levels: u32,
     layout: vk::ImageLayout,
 }
 
@@ -38,15 +38,16 @@ impl Image {
             depth: 1,
         };
 
-        let mut mip_levels = 1;
-        if builder.mipmapping {
+        let mut mip_levels = builder.mip_levels;
+
+        if builder.generate_mipmaps {
             mip_levels = max(builder.width, builder.height).ilog2() + 1;
         }
 
         let layout = vk::ImageLayout::UNDEFINED;
 
         let mut usage = builder.usage;
-        if builder.mipmapping {
+        if builder.generate_mipmaps {
             usage = vk::ImageUsageFlags::TRANSFER_SRC | usage
         }
 
@@ -135,6 +136,7 @@ impl Image {
             self.handle,
             self.layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            0,
             self.mip_levels,
             self.layers,
         );
@@ -165,6 +167,7 @@ impl Image {
                 self.handle,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                0,
                 self.mip_levels,
                 self.layers,
             );
@@ -180,6 +183,7 @@ impl Image {
         image: vk::Image,
         old_layout: vk::ImageLayout,
         new_layout: vk::ImageLayout,
+        base_mip_level: u32,
         mip_levels: u32,
         layer_count: u32,
     ) {
@@ -240,7 +244,7 @@ impl Image {
             .image(image)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
+                base_mip_level,
                 level_count: mip_levels,
                 base_array_layer: 0,
                 layer_count,
@@ -269,7 +273,8 @@ pub struct ImageBuilder<'a> {
     width: u32,
     height: u32,
     layers: u32,
-    mipmapping: bool,
+    generate_mipmaps: bool,
+    mip_levels: u32,
     format: vk::Format,
     usage: vk::ImageUsageFlags,
     samples: vk::SampleCountFlags,
@@ -284,7 +289,8 @@ impl Default for ImageBuilder<'_> {
             width: 0,
             height: 0,
             layers: 1,
-            mipmapping: false,
+            generate_mipmaps: false,
+            mip_levels: 1,
             format: vk::Format::default(),
             usage: vk::ImageUsageFlags::default(),
             samples: vk::SampleCountFlags::TYPE_1,
@@ -315,8 +321,13 @@ impl<'a> ImageBuilder<'a> {
         self
     }
 
-    pub fn mipmapping(mut self, mipmapping: bool) -> Self {
-        self.mipmapping = mipmapping;
+    pub fn generate_mipmaps(mut self, generate_mipmaps: bool) -> Self {
+        self.generate_mipmaps = generate_mipmaps;
+        self
+    }
+
+    pub fn mip_levels(mut self, mip_levels: u32) -> Self {
+        self.mip_levels = mip_levels;
         self
     }
 
@@ -361,6 +372,8 @@ impl ImageView {
         image: Arc<Image>,
         ty: vk::ImageViewType,
         aspect: vk::ImageAspectFlags,
+        base_mip_level: u32,
+        level_count: u32,
     ) -> Self {
         let image_view_create_info = vk::ImageViewCreateInfo::default()
             .image(image.handle)
@@ -368,8 +381,8 @@ impl ImageView {
             .format(image.format)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: aspect,
-                base_mip_level: 0,
-                level_count: image.mip_levels,
+                base_mip_level,
+                level_count,
                 base_array_layer: 0,
                 layer_count: image.layers,
             });

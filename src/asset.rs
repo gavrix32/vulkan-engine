@@ -75,6 +75,8 @@ impl AssetManager {
             image.clone(),
             vk::ImageViewType::TYPE_2D,
             vk::ImageAspectFlags::COLOR,
+            0,
+            image.mip_levels,
         );
 
         (image, image_view)
@@ -146,7 +148,7 @@ impl AssetManager {
             let image = Arc::new(
                 ImageBuilder::default()
                     .size(image_width, image_height)
-                    .mipmapping(true)
+                    .generate_mipmaps(true)
                     .format(vk::Format::R8G8B8A8_SRGB)
                     .usage(
                         vk::ImageUsageFlags::TRANSFER_SRC
@@ -167,6 +169,8 @@ impl AssetManager {
                 image.clone(),
                 vk::ImageViewType::TYPE_2D,
                 vk::ImageAspectFlags::COLOR,
+                0,
+                image.mip_levels,
             ));
         }
 
@@ -194,6 +198,8 @@ impl AssetManager {
             placeholder_image.clone(),
             vk::ImageViewType::TYPE_2D,
             vk::ImageAspectFlags::COLOR,
+            0,
+            placeholder_image.mip_levels,
         ));
 
         info!("Textures: {}, Size: {} MB", images.len(), size_mb);
@@ -281,7 +287,7 @@ fn create_image(
     Arc::new(
         ImageBuilder::default()
             .size(width, height)
-            .mipmapping(true)
+            .generate_mipmaps(true)
             .format(format)
             .usage(
                 vk::ImageUsageFlags::TRANSFER_SRC

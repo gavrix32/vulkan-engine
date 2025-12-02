@@ -7,6 +7,9 @@ SamplerCube cubemap_texture;
 SamplerCube irradiance_texture;
 
 [vk::binding(3, 0)]
+SamplerCube prefilter_texture;
+
+[vk::binding(4, 0)]
 Sampler2D textures[];
 
 struct VertexInput {
@@ -169,7 +172,7 @@ void fragment_main(
 
     float lod = roughness * MAX_REFLECTION_LOD;
 
-    float3 prefiltered_color = cubemap_texture.SampleLevel(R, lod).rgb;
+    float3 prefiltered_color = prefilter_texture.SampleLevel(R, lod).rgb;
 
     //prefiltered_color = float3(1.0) - exp(-prefiltered_color * exposure);
 

@@ -23,7 +23,7 @@ pub struct PipelineBuilder<'a> {
     color_write_mask: vk::ColorComponentFlags,
     depth_stencil_state: vk::PipelineDepthStencilStateCreateInfo<'a>,
     descriptor_set_layouts: &'a [vk::DescriptorSetLayout],
-    // push_constant_ranges: &'a [vk::PushConstantRange],
+    push_constant_ranges: &'a [vk::PushConstantRange],
     pipeline_layout_info: vk::PipelineLayoutCreateInfo<'a>,
     color_format: vk::Format,
     depth_format: vk::Format,
@@ -119,17 +119,17 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
-    // pub fn push_constant_ranges(
-    //     mut self,
-    //     push_constant_ranges: &'a [vk::PushConstantRange],
-    // ) -> Self {
-    //     self.push_constant_ranges = push_constant_ranges;
-    //     self.pipeline_layout_info = self
-    //         .pipeline_layout_info
-    //         .push_constant_ranges(&self.push_constant_ranges);
-    //
-    //     self
-    // }
+    pub fn push_constant_ranges(
+        mut self,
+        push_constant_ranges: &'a [vk::PushConstantRange],
+    ) -> Self {
+        self.push_constant_ranges = push_constant_ranges;
+        self.pipeline_layout_info = self
+            .pipeline_layout_info
+            .push_constant_ranges(&self.push_constant_ranges);
+
+        self
+    }
 
     pub fn depth_stencil_state(
         mut self,

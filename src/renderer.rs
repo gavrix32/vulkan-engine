@@ -17,6 +17,7 @@ use crate::vulkan::swapchain::Swapchain;
 use crate::vulkan::sync;
 use ash::util::Align;
 use ash::vk;
+use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -25,6 +26,7 @@ use std::time::Instant;
 
 // TODO: FrameContext?
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
+const MAX_MIP_LEVELS: u32 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -36,6 +38,12 @@ struct UniformBufferData {
     light_pos: Vec4, // 192
     cam_pos: Vec4,   // 208
                      // 224
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PushConstantData {
+    roughness: f32,
 }
 
 pub struct Renderer {
@@ -67,6 +75,9 @@ pub struct Renderer {
 
     _irr_image_view: ImageView,
     _irr_image: Arc<Image>,
+
+    _prefilter_image_view: ImageView,
+    _prefilter_image: Arc<Image>,
 
     frame_in_flight: usize,
 
@@ -180,6 +191,13 @@ impl Renderer {
             .binding(
                 3,
                 vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                1,
+                vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                4,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 scene.meshes[0].images.len() as u32,
                 vk::ShaderStageFlags::FRAGMENT,
                 vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
@@ -240,6 +258,8 @@ impl Renderer {
             cubemap_image.clone(),
             vk::ImageViewType::TYPE_2D_ARRAY,
             vk::ImageAspectFlags::COLOR,
+            0,
+            1,
         );
 
         let cubemap_image_view = ImageView::new(
@@ -247,6 +267,8 @@ impl Renderer {
             cubemap_image.clone(),
             vk::ImageViewType::CUBE,
             vk::ImageAspectFlags::COLOR,
+            0,
+            1,
         );
 
         let equirect_to_cubemap_descriptor_layout =
@@ -303,6 +325,7 @@ impl Renderer {
             cubemap_image.handle,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::GENERAL,
+            0,
             1,
             faces_count,
         );
@@ -338,6 +361,7 @@ impl Renderer {
             cubemap_image.handle,
             vk::ImageLayout::GENERAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            0,
             1,
             faces_count,
         );
@@ -362,6 +386,8 @@ impl Renderer {
             irr_image.clone(),
             vk::ImageViewType::TYPE_2D_ARRAY,
             vk::ImageAspectFlags::COLOR,
+            0,
+            1,
         );
 
         let irr_image_view = ImageView::new(
@@ -369,25 +395,26 @@ impl Renderer {
             irr_image.clone(),
             vk::ImageViewType::CUBE,
             vk::ImageAspectFlags::COLOR,
+            0,
+            1,
         );
 
-        let irr_descriptor_layout =
-            DescriptorSetLayout::builder(ctx.device.clone())
-                .binding(
-                    0,
-                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    1,
-                    vk::ShaderStageFlags::COMPUTE,
-                    vk::DescriptorBindingFlags::empty(),
-                )
-                .binding(
-                    1,
-                    vk::DescriptorType::STORAGE_IMAGE,
-                    1,
-                    vk::ShaderStageFlags::COMPUTE,
-                    vk::DescriptorBindingFlags::empty(),
-                )
-                .build();
+        let irr_descriptor_layout = DescriptorSetLayout::builder(ctx.device.clone())
+            .binding(
+                0,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                1,
+                vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                1,
+                vk::DescriptorType::STORAGE_IMAGE,
+                1,
+                vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .build();
 
         let irr_pool_sizes = [
             vk::DescriptorPoolSize::default()
@@ -397,10 +424,8 @@ impl Renderer {
                 .ty(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1),
         ];
-        let irr_pool =
-            DescriptorPool::new(ctx.device.clone(), 1, &irr_pool_sizes);
-        let irr_descriptor_set =
-            irr_pool.allocate(&irr_descriptor_layout, 0);
+        let irr_pool = DescriptorPool::new(ctx.device.clone(), 1, &irr_pool_sizes);
+        let irr_descriptor_set = irr_pool.allocate(&irr_descriptor_layout, 0);
 
         DescriptorWriter::default()
             .image(
@@ -425,6 +450,7 @@ impl Renderer {
             irr_image.handle,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::GENERAL,
+            0,
             1,
             faces_count,
         );
@@ -438,10 +464,8 @@ impl Renderer {
             .descriptor_set_layouts(&[irr_descriptor_layout.vk_layout])
             .build_compute_pipeline(ctx.device.clone());
 
-        irr_image_encoder.cmd_bind_pipeline(
-            vk::PipelineBindPoint::COMPUTE,
-            irr_pipeline.vk_pipeline,
-        );
+        irr_image_encoder
+            .cmd_bind_pipeline(vk::PipelineBindPoint::COMPUTE, irr_pipeline.vk_pipeline);
 
         let group_count = (irr_size + 16 - 1) / 16;
 
@@ -460,10 +484,166 @@ impl Renderer {
             irr_image.handle,
             vk::ImageLayout::GENERAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            0,
             1,
             faces_count,
         );
         irr_image_encoder.end_single_time(ctx.device.graphics_queue);
+
+        // Prefilter
+
+        let prefilter_size = 128;
+
+        let prefilter_image = Arc::new(
+            ImageBuilder::default()
+                .size(prefilter_size, prefilter_size)
+                .layers(faces_count)
+                .mip_levels(MAX_MIP_LEVELS)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
+                .flags(vk::ImageCreateFlags::CUBE_COMPATIBLE)
+                .build(&ctx.instance, &ctx.adapter, ctx.device.clone()),
+        );
+
+        let prefilter_image_view = ImageView::new(
+            ctx.device.clone(),
+            prefilter_image.clone(),
+            vk::ImageViewType::CUBE,
+            vk::ImageAspectFlags::COLOR,
+            0,
+            MAX_MIP_LEVELS,
+        );
+
+        let prefilter_descriptor_layout = DescriptorSetLayout::builder(ctx.device.clone())
+            .binding(
+                0,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                1,
+                vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                1,
+                vk::DescriptorType::STORAGE_IMAGE,
+                1,
+                vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .build();
+
+        let prefilter_pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(MAX_MIP_LEVELS),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(MAX_MIP_LEVELS),
+        ];
+        let prefilter_pool =
+            DescriptorPool::new(ctx.device.clone(), MAX_MIP_LEVELS, &prefilter_pool_sizes);
+        let mut prefilter_descriptor_sets = Vec::with_capacity(MAX_MIP_LEVELS as usize);
+
+        let prefilter_encoder = Encoder::begin_single_time(ctx.device.clone(), &ctx.adapter);
+
+        Image::transition_layout(
+            &prefilter_encoder,
+            prefilter_image.handle,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL,
+            0,
+            MAX_MIP_LEVELS,
+            faces_count,
+        );
+
+        let push_constant_range = vk::PushConstantRange::default()
+            .offset(0)
+            .size(size_of::<PushConstantData>() as u32)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE);
+
+        let prefilter_pipeline = PipelineBuilder::default()
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/prefilter.spv")),
+                vk::ShaderStageFlags::COMPUTE,
+                c"main",
+            )
+            .descriptor_set_layouts(&[prefilter_descriptor_layout.vk_layout])
+            .push_constant_ranges(&[push_constant_range])
+            .build_compute_pipeline(ctx.device.clone());
+
+        let mut prefilter_push_constants = PushConstantData { roughness: 0.0 };
+
+        let mut prefilter_image_array_views = Vec::new();
+
+        for level in 0..MAX_MIP_LEVELS {
+            prefilter_image_array_views.push(ImageView::new(
+                ctx.device.clone(),
+                prefilter_image.clone(),
+                vk::ImageViewType::TYPE_2D_ARRAY,
+                vk::ImageAspectFlags::COLOR,
+                level,
+                1,
+            ));
+
+            prefilter_descriptor_sets
+                .push(prefilter_pool.allocate(&prefilter_descriptor_layout, 0));
+
+            DescriptorWriter::default()
+                .image(
+                    0,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &cubemap_image_view,
+                    &sampler,
+                )
+                .image(
+                    1,
+                    vk::DescriptorType::STORAGE_IMAGE,
+                    vk::ImageLayout::GENERAL,
+                    &prefilter_image_array_views[level as usize],
+                    &sampler,
+                )
+                .update(
+                    ctx.device.clone(),
+                    prefilter_descriptor_sets[level as usize],
+                );
+
+            prefilter_encoder.cmd_bind_pipeline(
+                vk::PipelineBindPoint::COMPUTE,
+                prefilter_pipeline.vk_pipeline,
+            );
+
+            prefilter_encoder.cmd_bind_descriptor_sets(
+                vk::PipelineBindPoint::COMPUTE,
+                prefilter_pipeline.layout,
+                0,
+                &[prefilter_descriptor_sets[level as usize]],
+                &[],
+            );
+
+            prefilter_push_constants.roughness = level as f32 / (MAX_MIP_LEVELS - 1) as f32;
+
+            prefilter_encoder.cmd_push_constants(
+                prefilter_pipeline.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::bytes_of(&[prefilter_push_constants]),
+            );
+
+            let group_count = ((prefilter_size >> level) + 16 - 1) / 16;
+
+            prefilter_encoder.cmd_dispatch(group_count, group_count, faces_count);
+        }
+
+        Image::transition_layout(
+            &prefilter_encoder,
+            prefilter_image.handle,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            0,
+            MAX_MIP_LEVELS,
+            faces_count,
+        );
+        prefilter_encoder.end_single_time(ctx.device.graphics_queue);
 
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
@@ -471,7 +651,7 @@ impl Renderer {
                 .descriptor_count(3),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(3),
+                .descriptor_count(4),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(scene.meshes[0].images.len() as u32),
@@ -507,8 +687,15 @@ impl Renderer {
                     &irr_image_view,
                     &sampler,
                 )
-                .images(
+                .image(
                     3,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &prefilter_image_view,
+                    &sampler,
+                )
+                .images(
+                    4,
                     vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                     &scene.meshes[0].image_views,
@@ -664,6 +851,9 @@ impl Renderer {
             _irr_image_view: irr_image_view,
             _irr_image: irr_image,
 
+            _prefilter_image_view: prefilter_image_view,
+            _prefilter_image: prefilter_image,
+
             _cubemap_image_view: cubemap_image_view,
             _cubemap_image: cubemap_image,
 
@@ -746,6 +936,7 @@ impl Renderer {
             self.swapchain.images[swapchain_image_index as usize],
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            0,
             1,
             1,
         );
@@ -895,6 +1086,7 @@ impl Renderer {
             self.swapchain.images[swapchain_image_index as usize],
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::PRESENT_SRC_KHR,
+            0,
             1,
             1,
         );

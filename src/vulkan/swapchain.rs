@@ -274,6 +274,15 @@ fn init(
             .build(&instance, &adapter, device.clone()),
     );
 
+    let color_image_view = ImageView::new(
+        device.clone(),
+        color_image.clone(),
+        vk::ImageViewType::TYPE_2D,
+        vk::ImageAspectFlags::COLOR,
+        0,
+        color_image.mip_levels,
+    );
+
     let depth_image = Arc::new(
         ImageBuilder::default()
             .size(width, height)
@@ -283,18 +292,13 @@ fn init(
             .build(&instance, &adapter, device.clone()),
     );
 
-    let color_image_view = ImageView::new(
-        device.clone(),
-        color_image.clone(),
-        vk::ImageViewType::TYPE_2D,
-        vk::ImageAspectFlags::COLOR,
-    );
-
     let depth_image_view = ImageView::new(
         device.clone(),
         depth_image.clone(),
         vk::ImageViewType::TYPE_2D,
         vk::ImageAspectFlags::DEPTH,
+        0,
+        depth_image.mip_levels,
     );
 
     (
