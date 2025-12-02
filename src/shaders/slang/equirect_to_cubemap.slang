@@ -24,12 +24,12 @@ void main(uint3 thread_ID : SV_DispatchThreadID) {
 
     float3 dir;
     switch (thread_ID.z) {
-        case 0: dir = float3(1.0, uv.y, -uv.x); break;
-        case 1: dir = float3(-1.0, uv.y, uv.x); break;
+        case 0: dir = float3(1.0, -uv.y, -uv.x); break;
+        case 1: dir = float3(-1.0, -uv.y, uv.x); break;
         case 2: dir = float3(uv.x, 1.0, uv.y); break;
         case 3: dir = float3(uv.x, -1.0, -uv.y); break;
-        case 4: dir = float3(uv.x, uv.y, 1.0); break;
-        case 5: dir = float3(-uv.x, uv.y, -1.0); break;
+        case 4: dir = float3(uv.x, -uv.y, 1.0); break;
+        case 5: dir = float3(-uv.x, -uv.y, -1.0); break;
     }
     dir = normalize(dir);
 

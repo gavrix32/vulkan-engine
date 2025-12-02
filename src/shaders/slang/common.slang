@@ -5,4 +5,6 @@ struct UniformBuffer {
     float4 light_pos;
     float4 cam_pos;
 };
-[vk::binding(0, 0)] ConstantBuffer<UniformBuffer> uniforms;
+
+[vk::binding(0, 0)]
+ConstantBuffer<UniformBuffer> uniforms;

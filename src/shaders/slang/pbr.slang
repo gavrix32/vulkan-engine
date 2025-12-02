@@ -1,13 +1,10 @@
 import common;
 
-[vk::binding(1, 0)] Sampler2D env_texture;
-[vk::binding(2, 0)] Sampler2D textures[];
+[vk::binding(1, 0)]
+SamplerCube cubemap_texture;
 
-struct PushConstants {
-    float2 resolution;
-    float4x4 inv_view_proj;
-};
-[vk::push_constant] ConstantBuffer<PushConstants> push_constants;
+[vk::binding(2, 0)]
+Sampler2D textures[];
 
 static const float PI = 3.14159265;
 static const float EPSILON = 0.00001;
@@ -163,19 +160,12 @@ void fragment_main(
 
     // Environment
 
-    float2 uv = input.sv_position.xy / push_constants.resolution; // [0; 1]
-    uv = uv * 2.0 - 1.0;                                          // [-1; 1]
-
     float3 R = normalize(reflect(-V, N));
-
-    // float4 world_dir = mul(push_constants.inv_view_proj, float4(uv, 1.0, 1.0));
-    // float3 dir = normalize(world_dir.xyz / world_dir.w);
 
     float exposure = 1.0;
     float gamma = 2.2;
 
-    float2 sph_uv = sample_env(R);
-    float3 irradiance = env_texture.SampleLevel(sph_uv, 8.0).rgb;
+    float3 irradiance = cubemap_texture.SampleLevel(R, 8.0).rgb;
 
     irradiance = float3(1.0) - exp(-irradiance * exposure);
 
@@ -183,7 +173,7 @@ void fragment_main(
 
     float lod = roughness * MAX_REFLECTION_LOD;
 
-    float3 prefiltered_color = env_texture.SampleLevel(sample_env(R), lod).rgb;
+    float3 prefiltered_color = cubemap_texture.SampleLevel(R, lod).rgb;
 
     prefiltered_color = float3(1.0) - exp(-prefiltered_color * exposure);
 

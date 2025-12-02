@@ -17,7 +17,6 @@ use crate::vulkan::swapchain::Swapchain;
 use crate::vulkan::sync;
 use ash::util::Align;
 use ash::vk;
-use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use log::warn;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -39,18 +38,8 @@ struct UniformBufferData {
                      // 224
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct PushConstantData {
-    // std140 base alignment 16 bytes
-    resolution: [f32; 2], // 0
-    _pad0: [f32; 2],      //
-    inv_view_proj: [[f32; 4]; 4], // 16 bytes
-                          // 80 bytes
-}
-
 pub struct Renderer {
-    blit_pipeline: Pipeline,
+    skybox_pipeline: Pipeline,
     light_pipeline: Pipeline,
     pbr_pipeline: Pipeline,
 
@@ -58,17 +47,18 @@ pub struct Renderer {
 
     _pbr_descriptor_layout: DescriptorSetLayout,
     _light_descriptor_layout: DescriptorSetLayout,
-    _blit_descriptor_layout: DescriptorSetLayout,
+    _skybox_descriptor_layout: DescriptorSetLayout,
 
     pbr_descriptor_sets: Vec<vk::DescriptorSet>,
     light_descriptor_sets: Vec<vk::DescriptorSet>,
-    blit_descriptor_sets: Vec<vk::DescriptorSet>,
-
-    push_constant_data: PushConstantData,
+    skybox_descriptor_sets: Vec<vk::DescriptorSet>,
 
     uniform_buffers: Vec<Vec<Buffer>>,
 
     pub scene: Scene,
+
+    _cubemap_image_view: ImageView,
+    _cubemap_image: Arc<Image>,
 
     _sampler: Sampler,
 
@@ -83,9 +73,9 @@ pub struct Renderer {
 
     timer: Instant,
 
-    pub in_flight_fences: Vec<sync::Fence>,
-    pub image_available_semaphores: Vec<sync::Semaphore>,
-    pub render_finished_semaphores: Vec<sync::Semaphore>,
+    in_flight_fences: Vec<sync::Fence>,
+    image_available_semaphores: Vec<sync::Semaphore>,
+    render_finished_semaphores: Vec<sync::Semaphore>,
 
     encoder: Encoder,
     swapchain: Swapchain,
@@ -198,102 +188,22 @@ impl Renderer {
             )
             .build();
 
-        let blit_descriptor_layout = DescriptorSetLayout::builder(ctx.device.clone())
+        let skybox_descriptor_layout = DescriptorSetLayout::builder(ctx.device.clone())
             .binding(
                 0,
+                vk::DescriptorType::UNIFORM_BUFFER,
+                1,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                1,
                 vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 1,
                 vk::ShaderStageFlags::FRAGMENT,
                 vk::DescriptorBindingFlags::empty(),
             )
             .build();
-
-        let push_constant_data = PushConstantData {
-            resolution: [width as f32, height as f32],
-            _pad0: [0.0; 2],
-            inv_view_proj: [[0.0; 4]; 4],
-        };
-
-        let pool_sizes = [
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(2),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(2),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(scene.meshes[0].images.len() as u32),
-        ];
-
-        let mut descriptor_pools = Vec::new();
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            descriptor_pools.push(DescriptorPool::new(ctx.device.clone(), 3, &pool_sizes));
-        }
-
-        let mut pbr_descriptor_sets = Vec::new();
-        for frame in 0..MAX_FRAMES_IN_FLIGHT {
-            let pool = &descriptor_pools[frame];
-            let set = pool.allocate(&pbr_descriptor_layout, scene.meshes[0].images.len() as u32);
-
-            DescriptorWriter::default()
-                .buffer(
-                    0,
-                    vk::DescriptorType::UNIFORM_BUFFER,
-                    &uniform_buffers[0][frame],
-                )
-                .image(
-                    1,
-                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    &env_image_view,
-                    &sampler,
-                )
-                .images(
-                    2,
-                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    &scene.meshes[0].image_views,
-                    &sampler,
-                )
-                .update(ctx.device.clone(), set);
-
-            pbr_descriptor_sets.push(set);
-        }
-
-        let mut light_descriptor_sets = Vec::new();
-        for frame in 0..MAX_FRAMES_IN_FLIGHT {
-            let pool = &descriptor_pools[frame];
-            let set = pool.allocate(&light_descriptor_layout, 0);
-
-            DescriptorWriter::default()
-                .buffer(
-                    0,
-                    vk::DescriptorType::UNIFORM_BUFFER,
-                    &uniform_buffers[1][frame],
-                )
-                .update(ctx.device.clone(), set);
-
-            light_descriptor_sets.push(set);
-        }
-
-        let mut blit_descriptor_sets = Vec::new();
-        for frame in 0..MAX_FRAMES_IN_FLIGHT {
-            let pool = &descriptor_pools[frame];
-            let set = pool.allocate(&blit_descriptor_layout, 0);
-
-            DescriptorWriter::default()
-                .image(
-                    0,
-                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    &env_image_view,
-                    &sampler,
-                )
-                .update(ctx.device.clone(), set);
-
-            blit_descriptor_sets.push(set);
-        }
 
         let color_format = Swapchain::get_format(&ctx.adapter, &ctx.surface);
 
@@ -315,10 +225,17 @@ impl Renderer {
                 .build(&ctx.instance, &ctx.adapter, ctx.device.clone()),
         );
 
-        let cubemap_image_view = ImageView::new(
+        let cubemap_image_array_view = ImageView::new(
             ctx.device.clone(),
             cubemap_image.clone(),
             vk::ImageViewType::TYPE_2D_ARRAY,
+            vk::ImageAspectFlags::COLOR,
+        );
+
+        let cubemap_image_view = ImageView::new(
+            ctx.device.clone(),
+            cubemap_image.clone(),
+            vk::ImageViewType::CUBE,
             vk::ImageAspectFlags::COLOR,
         );
 
@@ -365,7 +282,7 @@ impl Renderer {
                 1,
                 vk::DescriptorType::STORAGE_IMAGE,
                 vk::ImageLayout::GENERAL,
-                &cubemap_image_view,
+                &cubemap_image_array_view,
                 &sampler,
             )
             .update(ctx.device.clone(), equirect_to_cubemap_descriptor_set);
@@ -412,9 +329,95 @@ impl Renderer {
             vk::ImageLayout::GENERAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             1,
-            1,
+            faces_count,
         );
         cubemap_image_encoder.end_single_time(ctx.device.graphics_queue);
+
+        let pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(3),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(2),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(scene.meshes[0].images.len() as u32),
+        ];
+
+        let mut descriptor_pools = Vec::new();
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            descriptor_pools.push(DescriptorPool::new(ctx.device.clone(), 3, &pool_sizes));
+        }
+
+        let mut pbr_descriptor_sets = Vec::new();
+        for frame in 0..MAX_FRAMES_IN_FLIGHT {
+            let pool = &descriptor_pools[frame];
+            let set = pool.allocate(&pbr_descriptor_layout, scene.meshes[0].images.len() as u32);
+
+            DescriptorWriter::default()
+                .buffer(
+                    0,
+                    vk::DescriptorType::UNIFORM_BUFFER,
+                    &uniform_buffers[0][frame],
+                )
+                .image(
+                    1,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &cubemap_image_view,
+                    &sampler,
+                )
+                .images(
+                    2,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &scene.meshes[0].image_views,
+                    &sampler,
+                )
+                .update(ctx.device.clone(), set);
+
+            pbr_descriptor_sets.push(set);
+        }
+
+        let mut light_descriptor_sets = Vec::new();
+        for frame in 0..MAX_FRAMES_IN_FLIGHT {
+            let pool = &descriptor_pools[frame];
+            let set = pool.allocate(&light_descriptor_layout, 0);
+
+            DescriptorWriter::default()
+                .buffer(
+                    0,
+                    vk::DescriptorType::UNIFORM_BUFFER,
+                    &uniform_buffers[1][frame],
+                )
+                .update(ctx.device.clone(), set);
+
+            light_descriptor_sets.push(set);
+        }
+
+        let mut skybox_descriptor_sets = Vec::new();
+        for frame in 0..MAX_FRAMES_IN_FLIGHT {
+            let pool = &descriptor_pools[frame];
+            let set = pool.allocate(&skybox_descriptor_layout, 0);
+
+            DescriptorWriter::default()
+                .buffer(
+                    0,
+                    vk::DescriptorType::UNIFORM_BUFFER,
+                    &uniform_buffers[0][frame],
+                )
+                .image(
+                    1,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &cubemap_image_view,
+                    &sampler,
+                )
+                .update(ctx.device.clone(), set);
+
+            skybox_descriptor_sets.push(set);
+        }
 
         let pipeline_builder = PipelineBuilder::default()
             .vertex_input(&binding_descriptions, &attribute_descriptions)
@@ -434,11 +437,6 @@ impl Renderer {
             .color_blend_state(vk::ColorComponentFlags::RGBA)
             .formats(color_format, vk::Format::D32_SFLOAT_S8_UINT);
 
-        let push_constant_range = vk::PushConstantRange::default()
-            .offset(0)
-            .size(size_of::<PushConstantData>() as u32)
-            .stage_flags(vk::ShaderStageFlags::ALL);
-
         let pbr_pipeline = pipeline_builder
             .clone()
             .shader_stage(
@@ -453,7 +451,6 @@ impl Renderer {
             )
             .depth_stencil_state(true, true, vk::CompareOp::LESS)
             .descriptor_set_layouts(&[pbr_descriptor_layout.vk_layout])
-            .push_constant_ranges(&[push_constant_range])
             .build_graphics_pipeline(ctx.device.clone());
 
         let light_pipeline = pipeline_builder
@@ -472,19 +469,35 @@ impl Renderer {
             .descriptor_set_layouts(&[light_descriptor_layout.vk_layout])
             .build_graphics_pipeline(ctx.device.clone());
 
-        let blit_pipeline = pipeline_builder
+        let skybox_pipeline = PipelineBuilder::default()
+            .vertex_input(&binding_descriptions, &attribute_descriptions)
+            .input_assembly(vk::PrimitiveTopology::TRIANGLE_LIST, false)
+            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+            .viewport_state(1, 1)
+            .rasterization_state(
+                false,
+                false,
+                vk::PolygonMode::FILL,
+                1.0,
+                vk::CullModeFlags::NONE,
+                vk::FrontFace::COUNTER_CLOCKWISE,
+                false,
+            )
+            .multisample_state(swapchain.msaa_samples)
+            .color_blend_state(vk::ColorComponentFlags::RGBA)
+            .formats(color_format, vk::Format::D32_SFLOAT_S8_UINT)
             .shader_stage(
-                Vec::from(include_bytes!("shaders/spirv/blit.spv")),
+                Vec::from(include_bytes!("shaders/spirv/skybox.spv")),
                 vk::ShaderStageFlags::VERTEX,
                 c"vertex_main",
             )
             .shader_stage(
-                Vec::from(include_bytes!("shaders/spirv/blit.spv")),
+                Vec::from(include_bytes!("shaders/spirv/skybox.spv")),
                 vk::ShaderStageFlags::FRAGMENT,
                 c"fragment_main",
             )
-            .descriptor_set_layouts(&[blit_descriptor_layout.vk_layout])
-            .push_constant_ranges(&[push_constant_range])
+            .depth_stencil_state(true, true, vk::CompareOp::LESS_OR_EQUAL)
+            .descriptor_set_layouts(&[skybox_descriptor_layout.vk_layout])
             .build_graphics_pipeline(ctx.device.clone());
 
         Self {
@@ -492,17 +505,15 @@ impl Renderer {
 
             _pbr_descriptor_layout: pbr_descriptor_layout,
             _light_descriptor_layout: light_descriptor_layout,
-            _blit_descriptor_layout: blit_descriptor_layout,
+            _skybox_descriptor_layout: skybox_descriptor_layout,
 
             pbr_descriptor_sets,
             light_descriptor_sets,
-            blit_descriptor_sets,
-
-            push_constant_data,
+            skybox_descriptor_sets,
 
             pbr_pipeline,
             light_pipeline,
-            blit_pipeline,
+            skybox_pipeline,
 
             _sampler: sampler,
 
@@ -510,6 +521,9 @@ impl Renderer {
             _env_image: env_image,
 
             scene,
+
+            _cubemap_image_view: cubemap_image_view,
+            _cubemap_image: cubemap_image,
 
             uniform_buffers,
 
@@ -642,31 +656,6 @@ impl Renderer {
         self.encoder.cmd_set_viewport(0, &viewports);
         self.encoder.cmd_set_scissor(0, &scissors);
 
-        // Blit
-        self.encoder.cmd_bind_pipeline(
-            vk::PipelineBindPoint::GRAPHICS,
-            self.blit_pipeline.vk_pipeline,
-        );
-
-        self.encoder.cmd_bind_descriptor_sets(
-            vk::PipelineBindPoint::GRAPHICS,
-            self.blit_pipeline.layout,
-            0,
-            &[self.blit_descriptor_sets[self.frame_in_flight]],
-            &[],
-        );
-
-        self.update_push_constants();
-
-        self.encoder.cmd_push_constants(
-            self.blit_pipeline.layout,
-            vk::ShaderStageFlags::ALL,
-            0,
-            bytemuck::bytes_of(&[self.push_constant_data]),
-        );
-
-        self.encoder.cmd_draw(3, 1, 0, 0);
-
         // PBR
         self.encoder.cmd_bind_pipeline(
             vk::PipelineBindPoint::GRAPHICS,
@@ -698,13 +687,6 @@ impl Renderer {
                 0,
                 &[self.pbr_descriptor_sets[self.frame_in_flight]],
                 &[],
-            );
-
-            self.encoder.cmd_push_constants(
-                self.blit_pipeline.layout,
-                vk::ShaderStageFlags::ALL,
-                0,
-                bytemuck::bytes_of(&[self.push_constant_data]),
             );
 
             self.encoder
@@ -747,6 +729,22 @@ impl Renderer {
             self.encoder
                 .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
         }
+
+        // Skybox
+        self.encoder.cmd_bind_pipeline(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.skybox_pipeline.vk_pipeline,
+        );
+
+        self.encoder.cmd_bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.skybox_pipeline.layout,
+            0,
+            &[self.skybox_descriptor_sets[self.frame_in_flight]],
+            &[],
+        );
+
+        self.encoder.cmd_draw(36, 1, 0, 0);
 
         self.encoder.cmd_end_rendering();
 
@@ -813,23 +811,6 @@ impl Renderer {
             )
         };
         uniform_align.copy_from_slice(&[uniform_buffer_data]);
-    }
-
-    fn update_push_constants(&mut self) {
-        let mut proj = Mat4::perspective_rh(
-            70.0_f32.to_radians(),
-            self.width as f32 / self.height as f32,
-            0.01,
-            1000.0,
-        );
-        proj.y_axis *= -1.0;
-
-        let view = Mat4::from_quat(self.scene.camera.quat.conjugate());
-
-        let inv_view_proj = (proj * view).inverse();
-
-        self.push_constant_data.resolution = [self.width as f32, self.height as f32];
-        self.push_constant_data.inv_view_proj = inv_view_proj.to_cols_array_2d();
     }
 
     pub fn draw_frame(&mut self) {
