@@ -147,7 +147,7 @@ impl Renderer {
         let asset = AssetManager::new(ctx.clone());
 
         let mut meshes = Vec::new();
-        meshes.push(asset.load_gltf(include_bytes!("../resources/models/sponza.glb")));
+        meshes.push(asset.load_gltf(include_bytes!("../resources/models/MetalRoughSpheres.glb")));
         meshes.push(asset.load_gltf(include_bytes!("../resources/models/Box.glb")));
 
         let scene = Scene {
@@ -1139,41 +1139,41 @@ impl Renderer {
         }
 
         // Light
-        self.encoder.cmd_bind_pipeline(
-            vk::PipelineBindPoint::GRAPHICS,
-            self.light_pipeline.vk_pipeline,
-        );
-
-        for (primitive_index, primitive) in self.scene.meshes[1].primitives.iter().enumerate() {
-            self.encoder.cmd_bind_vertex_buffers(
-                0,
-                &[self.scene.meshes[1].vertex_buffer.vk_buffer],
-                &[0],
-            );
-            self.encoder.cmd_bind_index_buffer(
-                self.scene.meshes[1].index_buffer.vk_buffer,
-                vk::DeviceSize::default(),
-                vk::IndexType::UINT32,
-            );
-
-            self.update_uniform_buffer(
-                &self.scene.meshes[1],
-                primitive_index,
-                light_pos_transform,
-                true,
-            );
-
-            self.encoder.cmd_bind_descriptor_sets(
-                vk::PipelineBindPoint::GRAPHICS,
-                self.light_pipeline.layout,
-                0,
-                &[self.light_descriptor_sets[self.frame_in_flight]],
-                &[],
-            );
-
-            self.encoder
-                .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
-        }
+        // self.encoder.cmd_bind_pipeline(
+        //     vk::PipelineBindPoint::GRAPHICS,
+        //     self.light_pipeline.vk_pipeline,
+        // );
+        //
+        // for (primitive_index, primitive) in self.scene.meshes[1].primitives.iter().enumerate() {
+        //     self.encoder.cmd_bind_vertex_buffers(
+        //         0,
+        //         &[self.scene.meshes[1].vertex_buffer.vk_buffer],
+        //         &[0],
+        //     );
+        //     self.encoder.cmd_bind_index_buffer(
+        //         self.scene.meshes[1].index_buffer.vk_buffer,
+        //         vk::DeviceSize::default(),
+        //         vk::IndexType::UINT32,
+        //     );
+        //
+        //     self.update_uniform_buffer(
+        //         &self.scene.meshes[1],
+        //         primitive_index,
+        //         light_pos_transform,
+        //         true,
+        //     );
+        //
+        //     self.encoder.cmd_bind_descriptor_sets(
+        //         vk::PipelineBindPoint::GRAPHICS,
+        //         self.light_pipeline.layout,
+        //         0,
+        //         &[self.light_descriptor_sets[self.frame_in_flight]],
+        //         &[],
+        //     );
+        //
+        //     self.encoder
+        //         .cmd_draw_indexed(primitive.index_count, 1, primitive.first_index, 0, 0);
+        // }
 
         // Skybox
         self.encoder.cmd_bind_pipeline(

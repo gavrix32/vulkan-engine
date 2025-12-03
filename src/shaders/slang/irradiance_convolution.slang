@@ -22,12 +22,12 @@ float2 hammersley(float i, float N) {
     return float2(i / N, radical_inverse_VdC);
 }
 
-float3 cosine_sample_hemisphere(float2 Xi){
+float3 cosine_sample_hemisphere(float2 Xi) {
     float phi = 2.0 * PI * Xi.x;
-    float cosTheta = sqrt(1.0 - Xi.y);
-    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    float cos_theta = sqrt(1.0 - Xi.y);
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
 
-    return float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+    return float3(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
 }
 
 float3 tangent_to_world(float3 vec, float3 N, float3 right, float3 up) {

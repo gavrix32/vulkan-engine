@@ -162,7 +162,7 @@ void fragment_main(
     float3 specular = prefiltered_color * (kS_IBL * brdf.x + brdf.y);
     float3 ambient = kD_IBL * diffuse + specular;
 
-    float3 color = ambient + Lo;
+    float3 color = ambient/* + Lo*/;
 
     color = neutral(color * EXPOSURE);
 
