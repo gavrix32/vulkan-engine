@@ -120,9 +120,7 @@ impl ApplicationHandler for State {
 
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
         match event {
-            DeviceEvent::MouseMotion { delta } => {
-                self.input.mouse_motion_event_queue.push_back(delta)
-            }
+            DeviceEvent::MouseMotion { delta } => self.input.send_mouse_motion_event(delta),
             _ => (),
         }
     }
@@ -136,11 +134,6 @@ impl ApplicationHandler for State {
         self.input.reset_once_buttons();
         if let Some((state, button)) = self.input.mouse_button_event_queue.pop_front() {
             self.input.send_mouse_button_event(state, button);
-        }
-
-        self.input.reset_mouse_motion();
-        if let Some(motion) = self.input.mouse_motion_event_queue.pop_front() {
-            self.input.send_mouse_motion_event(motion);
         }
     }
 }

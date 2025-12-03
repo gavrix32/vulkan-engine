@@ -15,7 +15,6 @@ pub struct Input {
     pub pressed_once_buttons: HashSet<MouseButton>,
     pub released_once_buttons: HashSet<MouseButton>,
 
-    pub mouse_motion_event_queue: VecDeque<(f64, f64)>,
     pub mouse_motion: (f64, f64),
     pub cursor_pos: PhysicalPosition<f64>,
 }
@@ -70,6 +69,7 @@ impl Input {
     }
 
     pub fn send_mouse_motion_event(&mut self, motion: (f64, f64)) {
-        self.mouse_motion = motion;
+        self.mouse_motion.0 += motion.0;
+        self.mouse_motion.1 += motion.1;
     }
 }

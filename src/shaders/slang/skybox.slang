@@ -1,5 +1,16 @@
 import common;
 
+struct UniformBuffer {
+    float4x4 model;
+    float4x4 view;
+    float4x4 proj;
+    float4 light_pos;
+    float4 cam_pos;
+};
+
+[vk::binding(0, 0)]
+ConstantBuffer<UniformBuffer> uniforms;
+
 [vk::binding(1, 0)]
 SamplerCube cubemap_texture;
 
@@ -61,7 +72,7 @@ void fragment_main(
 ) {
     float3 color = cubemap_texture.SampleLevel(input.uvw, 0.0).rgb;
 
-    color = aces_film(color * EXPOSURE);
+    color = neutral(color * EXPOSURE);
 
     out_color = float4(color, 1.0);
 }

@@ -79,6 +79,9 @@ pub struct Renderer {
     _prefilter_image_view: ImageView,
     _prefilter_image: Arc<Image>,
 
+    _lut_image_view: ImageView,
+    _lut_image: Arc<Image>,
+
     frame_in_flight: usize,
 
     pub framebuffer_resized: bool,
@@ -162,9 +165,8 @@ impl Renderer {
             vk::LOD_CLAMP_NONE,
         );
 
-        let (env_image, env_image_view) = asset.load_texture_rgba32f(include_bytes!(
-            "../resources/textures/the_sky_is_on_fire_4k.hdr"
-        ));
+        let (env_image, env_image_view) =
+            asset.load_texture_rgba32f(include_bytes!("../resources/textures/the_sky_is_on_fire_4k.hdr"));
 
         let pbr_descriptor_layout = DescriptorSetLayout::builder(ctx.device.clone())
             .binding(
@@ -197,6 +199,13 @@ impl Renderer {
             )
             .binding(
                 4,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                1,
+                vk::ShaderStageFlags::FRAGMENT,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .binding(
+                5,
                 vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 scene.meshes[0].images.len() as u32,
                 vk::ShaderStageFlags::FRAGMENT,
@@ -645,13 +654,106 @@ impl Renderer {
         );
         prefilter_encoder.end_single_time(ctx.device.graphics_queue);
 
+        // BRDF LUT
+
+        let lut_size = 512;
+
+        let lut_image = Arc::new(
+            ImageBuilder::default()
+                .size(lut_size, lut_size)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
+                .build(&ctx.instance, &ctx.adapter, ctx.device.clone()),
+        );
+
+        let lut_image_view = ImageView::new(
+            ctx.device.clone(),
+            lut_image.clone(),
+            vk::ImageViewType::TYPE_2D,
+            vk::ImageAspectFlags::COLOR,
+            0,
+            1,
+        );
+
+        let lut_descriptor_layout = DescriptorSetLayout::builder(ctx.device.clone())
+            .binding(
+                0,
+                vk::DescriptorType::STORAGE_IMAGE,
+                1,
+                vk::ShaderStageFlags::COMPUTE,
+                vk::DescriptorBindingFlags::empty(),
+            )
+            .build();
+
+        let lut_pool_sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::STORAGE_IMAGE)
+            .descriptor_count(1)];
+        let lut_pool = DescriptorPool::new(ctx.device.clone(), 1, &lut_pool_sizes);
+        let lut_descriptor_set = lut_pool.allocate(&lut_descriptor_layout, 0);
+
+        DescriptorWriter::default()
+            .image(
+                0,
+                vk::DescriptorType::STORAGE_IMAGE,
+                vk::ImageLayout::GENERAL,
+                &lut_image_view,
+                &sampler,
+            )
+            .update(ctx.device.clone(), lut_descriptor_set);
+
+        let lut_image_encoder = Encoder::begin_single_time(ctx.device.clone(), &ctx.adapter);
+        Image::transition_layout(
+            &lut_image_encoder,
+            lut_image.handle,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL,
+            0,
+            1,
+            1,
+        );
+
+        let lut_pipeline = PipelineBuilder::default()
+            .shader_stage(
+                Vec::from(include_bytes!("shaders/spirv/brdf_lut.spv")),
+                vk::ShaderStageFlags::COMPUTE,
+                c"main",
+            )
+            .descriptor_set_layouts(&[lut_descriptor_layout.vk_layout])
+            .build_compute_pipeline(ctx.device.clone());
+
+        lut_image_encoder
+            .cmd_bind_pipeline(vk::PipelineBindPoint::COMPUTE, lut_pipeline.vk_pipeline);
+
+        let group_count = (lut_size + 16 - 1) / 16;
+
+        lut_image_encoder.cmd_bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            lut_pipeline.layout,
+            0,
+            &[lut_descriptor_set],
+            &[],
+        );
+
+        lut_image_encoder.cmd_dispatch(group_count, group_count, 1);
+
+        Image::transition_layout(
+            &lut_image_encoder,
+            lut_image.handle,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            0,
+            1,
+            1,
+        );
+        lut_image_encoder.end_single_time(ctx.device.graphics_queue);
+
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(3),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(4),
+                .descriptor_count(5),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(scene.meshes[0].images.len() as u32),
@@ -694,8 +796,15 @@ impl Renderer {
                     &prefilter_image_view,
                     &sampler,
                 )
-                .images(
+                .image(
                     4,
+                    vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &lut_image_view,
+                    &sampler,
+                )
+                .images(
+                    5,
                     vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                     &scene.meshes[0].image_views,
@@ -853,6 +962,9 @@ impl Renderer {
 
             _prefilter_image_view: prefilter_image_view,
             _prefilter_image: prefilter_image,
+
+            _lut_image_view: lut_image_view,
+            _lut_image: lut_image,
 
             _cubemap_image_view: cubemap_image_view,
             _cubemap_image: cubemap_image,

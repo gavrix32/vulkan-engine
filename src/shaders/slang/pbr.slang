@@ -1,5 +1,16 @@
 import common;
 
+struct UniformBuffer {
+    float4x4 model;
+    float4x4 view;
+    float4x4 proj;
+    float4 light_pos;
+    float4 cam_pos;
+};
+
+[vk::binding(0, 0)]
+ConstantBuffer<UniformBuffer> uniforms;
+
 [vk::binding(1, 0)]
 SamplerCube cubemap_texture;
 
@@ -10,6 +21,9 @@ SamplerCube irradiance_texture;
 SamplerCube prefilter_texture;
 
 [vk::binding(4, 0)]
+Sampler2D lut_texture;
+
+[vk::binding(5, 0)]
 Sampler2D textures[];
 
 struct VertexInput {
@@ -66,37 +80,8 @@ float3 fresnel_schlick(float3 F0, float HdotV) {
     return F0 + (1.0 - F0) * pow(1.0 - HdotV, 5.0);
 }
 
-// GGX/Trowbridge-Reitz Normal Distribution Function
-float distribution_GGX(float3 N, float NdotH, float alpha) {
-    float alpha2 = pow(alpha, 2.0);
-    float NdotH2 = pow(NdotH, 2.0);
-
-    float numerator = alpha2;
-    float denominator = PI * pow(NdotH2 * (alpha2 - 1.0) + 1.0, 2.0);
-
-    return numerator / max(denominator, EPSILON);
-}
-
-// Smith Geometry Shadowing Function (light and view components)
-float geometry_smith(float3 N, float NdotL, float NdotV, float alpha) {
-    return geometry_schlick_GGX(N, NdotL, alpha) * geometry_schlick_GGX(N, NdotV, alpha);
-}
-
-// Schlick-Beckmann Geometry Shadowing Function
-float geometry_schlick_GGX(float3 N, float NdotX, float alpha) {
-    float k = alpha / 2.0;
-
-    float numerator = NdotX;
-    float denominator = NdotX * (1.0 - k) + k;
-
-    return numerator / max(denominator, EPSILON);
-}
-
-float2 sample_env(float3 dir) {
-    float2 uv;
-    uv.x = atan2(dir.z, dir.x) / (2.0 * PI) + 0.5;
-    uv.y = acos(dir.y) / PI;
-    return uv;
+float3 fresnel_schlick_roughness(float NdotV, float3 F0, float roughness) {
+    return F0 + (max(float3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
 }
 
 [shader("fragment")]
@@ -111,19 +96,18 @@ void fragment_main(
 
     float3 albedo = textures[albedo_index].Sample(input.tex_coord).rgb;
 
-    float3 tangent_normal = textures[normal_index].Sample(input.tex_coord).rgb;
-    float3x3 TBN = transpose(float3x3(
-        normalize(input.world_tangent),
-        normalize(input.world_bitangent),
-        normalize(input.world_normal)
-    ));
-    float3 normal = normalize(mul(TBN, tangent_normal));
+    float4 tangent_normal = textures[normal_index].Sample(input.tex_coord);
+    tangent_normal.rgb = tangent_normal.rgb * 2.0 - 1.0;
 
-    // placeholder check
-    if (all(tangent_normal == float3(1.0, 0.0, 0.0)) ||
-        all(tangent_normal == float3(0.0, 0.0, 0.0))
-    ) {
-        normal = normalize(input.world_normal);
+    float3x3 TBN = float3x3(
+        input.world_tangent,
+        input.world_bitangent,
+        input.world_normal,
+    );
+    float3 normal = normalize(mul(tangent_normal.rgb, TBN));
+
+    if (tangent_normal.a == 0.0) {
+        normal = input.world_normal;
     }
 
     float3 metallic_roughness = textures[metallic_roughness_index].Sample(input.tex_coord).rgb;
@@ -148,10 +132,9 @@ void fragment_main(
     float alpha = pow(roughness, 2.0);
 
     float D = distribution_GGX(N, NdotH, alpha);
-    float G = geometry_smith(N, NdotL, NdotV, alpha);
+    float G = geometry_smith(NdotL, NdotV, alpha);
     float3 F = fresnel_schlick(F0, HdotV);
-
-    float3 lambert_diffuse = albedo / PI;
+    float3 R = normalize(reflect(-V, N));
 
     float3 numerator = D * G * F;
     float3 denominator = 4.0 * NdotV * NdotL;
@@ -160,37 +143,28 @@ void fragment_main(
     float3 kS = F;
     float3 kD = (1.0 - kS) * (1.0 - metallic);
 
-    // Environment
-
-    float3 R = normalize(reflect(-V, N));
-
-    float3 irradiance = irradiance_texture.SampleLevel(N, 0.0).rgb;
-
-    //irradiance = float3(1.0) - exp(-irradiance * exposure);
-
-    float3 diffuse_IBL = kD * albedo * irradiance;
-
-    float lod = roughness * MAX_REFLECTION_LOD;
-
-    float3 prefiltered_color = prefilter_texture.SampleLevel(R, lod).rgb;
-
-    //prefiltered_color = float3(1.0) - exp(-prefiltered_color * exposure);
-
-    float3 specular_IBL = prefiltered_color * F0;
-
-    float3 BRDF = kD * lambert_diffuse * irradiance + cook_torrance_specular;
-
     float distance = length(uniforms.light_pos.xyz - input.frag_pos);
     float attenuation = 1.0 / pow(distance, 2.0);
-    float3 Li = light_color * attenuation;
-    float3 Le = 0.02 * albedo;
+    float3 radiance = light_color * attenuation;
 
-    float3 L_direct = BRDF * Li * NdotL;
-    float3 L_indirect = diffuse_IBL + specular_IBL;
+    float3 Lo = (kD * albedo / PI + cook_torrance_specular) * radiance * NdotL;
 
-    float3 Lo = Le + L_direct + L_indirect;
 
-    Lo = aces_film(Lo * EXPOSURE);
+    float3 kS_IBL = fresnel_schlick_roughness(NdotV, F0, roughness);
+    float3 kD_IBL = (1.0 - kS_IBL) * (1.0 - metallic);
 
-    out_color = float4(Lo, 1.0);
+    float3 irradiance = irradiance_texture.SampleLevel(N, 0.0).rgb;
+    float3 diffuse = irradiance * albedo;
+
+    float3 prefiltered_color = prefilter_texture.SampleLevel(R, roughness * MAX_MIP_LEVELS).rgb;
+
+    float2 brdf = lut_texture.SampleLevel(float2(NdotV, roughness), 0.0).rg;
+    float3 specular = prefiltered_color * (kS_IBL * brdf.x + brdf.y);
+    float3 ambient = kD_IBL * diffuse + specular;
+
+    float3 color = ambient + Lo;
+
+    color = neutral(color * EXPOSURE);
+
+    out_color = float4(color, 1.0);
 }

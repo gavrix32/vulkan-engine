@@ -61,6 +61,7 @@ fn traverse_node(
     indices: &mut Vec<u32>,
     primitives: &mut Vec<Primitive>,
     parent_transform: Mat4,
+    default_idx: usize,
 ) {
     info!("Node: {}", node.name().unwrap_or("Unnamed"));
 
@@ -116,9 +117,9 @@ fn traverse_node(
                     tangent: [0.0; 4],
                     tex_coord: tex_coords.get(i).copied().unwrap_or([0.0, 0.0]),
                     material_indices: [
-                        albedo_index.unwrap_or(0) as u32,
-                        normal_index.unwrap_or(0) as u32,
-                        metallic_roughness_index.unwrap_or(0) as u32,
+                        albedo_index.unwrap_or(default_idx) as u32,
+                        normal_index.unwrap_or(default_idx) as u32,
+                        metallic_roughness_index.unwrap_or(default_idx) as u32,
                     ],
                 });
             }
@@ -133,16 +134,25 @@ fn traverse_node(
     }
 
     for child in node.children() {
-        traverse_node(child, buffers, vertices, indices, primitives, model_matrix);
+        traverse_node(
+            child,
+            buffers,
+            vertices,
+            indices,
+            primitives,
+            model_matrix,
+            default_idx,
+        );
     }
 }
 
 pub(crate) fn parse_model(
-    document: gltf::Document,
+    document: &gltf::Document,
     buffers: &Vec<buffer::Data>,
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
     primitives: &mut Vec<Primitive>,
+    default_idx: usize,
 ) {
     for scene in document.scenes() {
         info!("Scene: {}", scene.name().unwrap_or("Unnamed"));
@@ -154,6 +164,7 @@ pub(crate) fn parse_model(
                 indices,
                 primitives,
                 Mat4::IDENTITY,
+                default_idx,
             );
         }
     }

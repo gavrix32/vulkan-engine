@@ -94,11 +94,12 @@ impl AssetManager {
 
         info!("Parsing model");
         parser::parse_model(
-            document,
+            &document,
             &buffers_data,
             &mut vertices,
             &mut indices,
             &mut primitives,
+            images_data.len(),
         );
         info!("Vertices: {}, Indices: {}", vertices.len(), indices.len());
 
@@ -109,13 +110,24 @@ impl AssetManager {
         };
         mikktspace::generate_tangents(&mut mesh_view);
 
+        let mut texture_formats = vec![vk::Format::R8G8B8A8_UNORM; images_data.len()];
+
+        for material in document.materials() {
+            if let Some(info) = material.pbr_metallic_roughness().base_color_texture() {
+                let index = info.texture().source().index();
+                if index < texture_formats.len() {
+                    texture_formats[index] = vk::Format::R8G8B8A8_SRGB;
+                }
+            }
+        }
+
         let mut images = Vec::<Arc<Image>>::new();
         let mut image_views = Vec::<ImageView>::new();
 
         let mut size_mb = 0;
 
         info!("Loading textures");
-        for image_data in &images_data {
+        for (i, image_data) in images_data.iter().enumerate() {
             size_mb += image_data.pixels.len() / 1024 / 1024;
 
             let (image_bytes, image_width, image_height) = {
@@ -149,7 +161,7 @@ impl AssetManager {
                 ImageBuilder::default()
                     .size(image_width, image_height)
                     .generate_mipmaps(true)
-                    .format(vk::Format::R8G8B8A8_SRGB)
+                    .format(texture_formats[i])
                     .usage(
                         vk::ImageUsageFlags::TRANSFER_SRC
                             | vk::ImageUsageFlags::TRANSFER_DST
@@ -186,13 +198,13 @@ impl AssetManager {
             &self.ctx.instance,
             &self.ctx.adapter,
             self.ctx.device.clone(),
-            vk::Format::R8G8B8A8_SRGB,
+            vk::Format::R8G8B8A8_UNORM,
             placeholder_image_reader.width(),
             placeholder_image_reader.height(),
             placeholder_bytes,
         );
-
         images.push(placeholder_image.clone());
+
         image_views.push(ImageView::new(
             self.ctx.device.clone(),
             placeholder_image.clone(),

@@ -7,7 +7,7 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "Compiling shaders..."
 
-for SHADER in equirect_to_cubemap pbr light skybox irradiance_convolution prefilter; do
+for SHADER in equirect_to_cubemap pbr light skybox irradiance_convolution prefilter brdf_lut; do
     SRC="$SHADER_DIR/$SHADER.slang"
     DST="$OUTPUT_DIR/$SHADER.spv"
 

@@ -73,6 +73,8 @@ fn main() {
             renderer.scene.camera = camera;
         }
 
+        state.input.reset_mouse_motion();
+
         state.update(&mut event_loop);
 
         fps_counter.end();
