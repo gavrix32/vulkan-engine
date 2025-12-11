@@ -2,114 +2,96 @@ use crate::unsafe_vk_try;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::device::Device;
 use crate::vulkan::encoder::Encoder;
-use crate::vulkan::instance::Instance;
+use crate::vulkan::pool::CmdPool;
 use ash::vk;
-use std::ffi;
-use std::sync::Arc;
+use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
+use std::sync::{Arc, Mutex};
 
 pub struct Buffer {
     device: Arc<Device>,
-    pub vk_buffer: vk::Buffer,
-    pub memory: vk::DeviceMemory,
+    pub handle: vk::Buffer,
+    pub allocation: Option<Allocation>,
+    pub allocator: Arc<Mutex<Allocator>>,
     pub size: vk::DeviceSize,
-    pub p_data: Option<*mut ffi::c_void>,
 }
 
 impl Buffer {
     pub fn new(
-        instance: &Instance,
-        adapter: &Adapter,
         device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
-        memory_flags: vk::MemoryPropertyFlags,
+        location: MemoryLocation,
     ) -> Self {
         let buffer_create_info = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-        let buffer = unsafe_vk_try!(device.ash_device.create_buffer(&buffer_create_info, None));
+        let handle = unsafe_vk_try!(device.handle.create_buffer(&buffer_create_info, None));
 
-        let memory_requirements =
-            unsafe { device.ash_device.get_buffer_memory_requirements(buffer) };
+        let requirements = unsafe { device.handle.get_buffer_memory_requirements(handle) };
 
-        let memory_allocate_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(memory_requirements.size)
-            .memory_type_index(Self::find_memory_type(
-                instance,
-                adapter,
-                memory_requirements.memory_type_bits,
-                memory_flags,
-            ));
+        let allocation = allocator
+            .lock()
+            .expect("Failed to lock GPU allocator mutex")
+            .allocate(&AllocationCreateDesc {
+                name: "Buffer allocation",
+                requirements,
+                location,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .expect("Failed to allocate buffer");
 
-        let memory = unsafe_vk_try!(
-            device
-                .ash_device
-                .allocate_memory(&memory_allocate_info, None)
-        );
-
-        unsafe_vk_try!(device.ash_device.bind_buffer_memory(buffer, memory, 0));
+        unsafe_vk_try!(device.handle.bind_buffer_memory(
+            handle,
+            allocation.memory(),
+            allocation.offset()
+        ));
 
         Self {
             device,
-            vk_buffer: buffer,
-            memory,
+            handle,
+            allocator,
+            allocation: Some(allocation),
             size,
-            p_data: None,
         }
     }
 
     pub fn copy(&self, graphics_queue: vk::Queue, adapter: &Adapter, dst_buffer: &Self) {
         let copy_region = vk::BufferCopy::default().size(self.size);
 
-        let encoder = Encoder::begin_single_time(self.device.clone(), adapter);
-        encoder.cmd_copy_buffer(self.vk_buffer, dst_buffer.vk_buffer, &[copy_region]);
+        let single_time_pool = CmdPool::new(self.device.clone(), &adapter);
+        let encoder = Encoder::begin_single_time(self.device.clone(), &single_time_pool);
+        encoder.cmd_copy_buffer(self.handle, dst_buffer.handle, &[copy_region]);
         encoder.end_single_time(graphics_queue);
     }
 
-    pub fn map_memory(&mut self) {
-        self.p_data = Some(unsafe_vk_try!(self.device.ash_device.map_memory(
-            self.memory,
-            0,
-            self.size,
-            vk::MemoryMapFlags::empty(),
-        )));
-    }
+    pub fn update<T: bytemuck::NoUninit>(&mut self, data: &[T]) {
+        let bytes = bytemuck::cast_slice(data);
 
-    pub fn unmap_memory(&self) {
-        unsafe { self.device.ash_device.unmap_memory(self.memory) };
-    }
-
-    pub fn find_memory_type(
-        instance: &Instance,
-        adapter: &Adapter,
-        type_filter: u32,
-        properties: vk::MemoryPropertyFlags,
-    ) -> u32 {
-        let memory_properties = unsafe {
-            instance
-                .ash_instance
-                .get_physical_device_memory_properties(adapter.physical_device)
-        };
-
-        for i in 0..memory_properties.memory_type_count {
-            if (type_filter & (1 << i) != 0)
-                && memory_properties.memory_types[i as usize].property_flags & properties
-                    == properties
-            {
-                return i;
-            }
+        if let Some(allocation) = self.allocation.as_mut() {
+            allocation
+                .mapped_slice_mut()
+                .expect("No data pointer in buffer")[..bytes.len()]
+                .copy_from_slice(bytes);
         }
-        panic!("Failed to find suitable memory type");
     }
 }
 
 impl Drop for Buffer {
     fn drop(&mut self) {
         unsafe {
-            self.device.ash_device.destroy_buffer(self.vk_buffer, None);
-            self.device.ash_device.free_memory(self.memory, None);
+            self.device.handle.destroy_buffer(self.handle, None);
+            if let Some(allocation) = self.allocation.take() {
+                self.allocator
+                    .lock()
+                    .expect("Failed to lock GPU allocator mutex")
+                    .free(allocation)
+                    .expect("Failed to free GPU allocation");
+            }
         }
     }
 }

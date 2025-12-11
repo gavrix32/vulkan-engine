@@ -4,18 +4,21 @@ use crate::vulkan::buffer::Buffer;
 use crate::vulkan::device::Device;
 use crate::vulkan::encoder::Encoder;
 use crate::vulkan::instance::Instance;
-use ash::util::Align;
+use crate::vulkan::pool::CmdPool;
 use ash::vk;
+use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
 use log::error;
 use std::cmp::max;
-use std::sync::Arc;
-
+use std::sync::{Arc, Mutex};
 // TODO: use allocator crate
 
 pub struct Image {
     device: Arc<Device>,
     pub handle: vk::Image,
-    memory: vk::DeviceMemory,
+
+    pub allocation: Option<Allocation>,
+    pub allocator: Arc<Mutex<Allocator>>,
 
     // Metadata
     format: vk::Format,
@@ -28,9 +31,9 @@ pub struct Image {
 impl Image {
     fn new(
         builder: ImageBuilder,
-        instance: &Instance,
-        adapter: &Adapter,
         device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        location: MemoryLocation,
     ) -> Self {
         let extent = vk::Extent3D {
             width: builder.width,
@@ -64,32 +67,45 @@ impl Image {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .samples(builder.samples);
 
-        let vk_image = unsafe_vk_try!(device.ash_device.create_image(&image_create_info, None));
+        let handle = unsafe_vk_try!(device.handle.create_image(&image_create_info, None));
 
-        let memory_requirements =
-            unsafe { device.ash_device.get_image_memory_requirements(vk_image) };
+        let requirements = unsafe { device.handle.get_image_memory_requirements(handle) };
 
-        let memory_allocate_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(memory_requirements.size)
-            .memory_type_index(Buffer::find_memory_type(
-                instance,
-                adapter,
-                memory_requirements.memory_type_bits,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            ));
+        let allocation = allocator
+            .lock()
+            .expect("Failed to lock GPU allocator mutex")
+            .allocate(&AllocationCreateDesc {
+                name: "Image allocation",
+                requirements,
+                location,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .expect("Failed to allocate image");
 
-        let memory = unsafe_vk_try!(
-            device
-                .ash_device
-                .allocate_memory(&memory_allocate_info, None)
-        );
+        // let memory_allocate_info = vk::MemoryAllocateInfo::default()
+        //     .allocation_size(requirements.size)
+        //     .memory_type_index(Buffer::find_memory_type(
+        //         instance,
+        //         adapter,
+        //         requirements.memory_type_bits,
+        //         vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        //     ));
+        //
+        // let memory = unsafe_vk_try!(device.handle.allocate_memory(&memory_allocate_info, None));
 
-        unsafe_vk_try!(device.ash_device.bind_image_memory(vk_image, memory, 0));
+        unsafe_vk_try!(device.handle.bind_image_memory(
+            handle,
+            allocation.memory(),
+            allocation.offset()
+        ));
 
         Self {
             device,
-            handle: vk_image,
-            memory,
+            handle,
+
+            allocator,
+            allocation: Some(allocation),
 
             format: builder.format,
             extent,
@@ -99,7 +115,13 @@ impl Image {
         }
     }
 
-    fn load_bytes(self, bytes: &[u8], instance: &Instance, adapter: &Adapter) -> Self {
+    fn load_bytes(
+        self,
+        allocator: Arc<Mutex<Allocator>>,
+        bytes: &[u8],
+        instance: &Instance,
+        adapter: &Adapter,
+    ) -> Self {
         let pixel_size = match self.format {
             vk::Format::R8G8B8A8_UNORM | vk::Format::R8G8B8A8_SRGB => 4,
             vk::Format::R32G32B32A32_SFLOAT => 16,
@@ -109,28 +131,19 @@ impl Image {
         let image_size = (self.extent.width * self.extent.height * pixel_size) as vk::DeviceSize;
 
         let mut staging_buffer = Buffer::new(
-            instance,
-            adapter,
             self.device.clone(),
+            allocator.clone(),
             image_size,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            MemoryLocation::CpuToGpu,
         );
 
-        staging_buffer.map_memory();
-        let data_ptr = staging_buffer
-            .p_data
-            .expect("No data pointer in staging buffer");
-
-        let mut image_align =
-            unsafe { Align::new(data_ptr, align_of::<u8>() as vk::DeviceSize, image_size) };
-        image_align.copy_from_slice(bytes);
-
-        staging_buffer.unmap_memory();
+        staging_buffer.update(&bytes);
 
         // TODO: попробовать транзишены в 1 энкодер для better performance
 
-        let encoder = Encoder::begin_single_time(self.device.clone(), adapter);
+        let single_time_pool = CmdPool::new(self.device.clone(), &adapter);
+        let encoder = Encoder::begin_single_time(self.device.clone(), &single_time_pool);
         Self::transition_layout(
             &encoder,
             self.handle,
@@ -161,7 +174,7 @@ impl Image {
                 self.mip_levels,
             );
         } else {
-            let encoder = Encoder::begin_single_time(self.device.clone(), adapter);
+            let encoder = Encoder::begin_single_time(self.device.clone(), &single_time_pool);
             Self::transition_layout(
                 &encoder,
                 self.handle,
@@ -260,8 +273,14 @@ impl Image {
 impl Drop for Image {
     fn drop(&mut self) {
         unsafe {
-            self.device.ash_device.destroy_image(self.handle, None);
-            self.device.ash_device.free_memory(self.memory, None);
+            self.device.handle.destroy_image(self.handle, None);
+            if let Some(allocation) = self.allocation.take() {
+                self.allocator
+                    .lock()
+                    .expect("Failed to lock GPU allocator mutex")
+                    .free(allocation)
+                    .expect("Failed to free GPU allocation");
+            }
         }
     }
 }
@@ -351,10 +370,17 @@ impl<'a> ImageBuilder<'a> {
         self
     }
 
-    pub fn build(self, instance: &Instance, adapter: &Adapter, device: Arc<Device>) -> Image {
-        let image = Image::new(self, instance, adapter, device);
+    pub fn build(
+        self,
+        instance: &Instance,
+        adapter: &Adapter,
+        device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        location: MemoryLocation,
+    ) -> Image {
+        let image = Image::new(self, device, allocator.clone(), location);
         if !self.bytes.is_empty() {
-            return image.load_bytes(self.bytes, instance, adapter);
+            return image.load_bytes(allocator.clone(), self.bytes, instance, adapter);
         }
         image
     }
@@ -389,7 +415,7 @@ impl ImageView {
 
         let handle = unsafe_vk_try!(
             device
-                .ash_device
+                .handle
                 .create_image_view(&image_view_create_info, None)
         );
 
@@ -404,7 +430,7 @@ impl ImageView {
 impl Drop for ImageView {
     fn drop(&mut self) {
         unsafe {
-            self.device.ash_device.destroy_image_view(self.handle, None);
+            self.device.handle.destroy_image_view(self.handle, None);
         }
     }
 }
@@ -438,7 +464,7 @@ impl Sampler {
             .min_lod(0.0)
             .max_lod(max_lod);
 
-        let handle = unsafe_vk_try!(device.ash_device.create_sampler(&sampler_create_info, None));
+        let handle = unsafe_vk_try!(device.handle.create_sampler(&sampler_create_info, None));
 
         Self { device, handle }
     }
@@ -447,7 +473,7 @@ impl Sampler {
 impl Drop for Sampler {
     fn drop(&mut self) {
         unsafe {
-            self.device.ash_device.destroy_sampler(self.handle, None);
+            self.device.handle.destroy_sampler(self.handle, None);
         }
     }
 }
@@ -464,8 +490,8 @@ fn generate_mipmaps(
 ) {
     let format_props = unsafe {
         instance
-            .ash_instance
-            .get_physical_device_format_properties(adapter.physical_device, format)
+            .handle
+            .get_physical_device_format_properties(adapter.handle, format)
     };
     if format_props.optimal_tiling_features & vk::FormatFeatureFlags::SAMPLED_IMAGE
         == vk::FormatFeatureFlags::empty()
@@ -481,7 +507,8 @@ fn generate_mipmaps(
 
     let mut barrier = vk::ImageMemoryBarrier2::default().image(vk_image);
 
-    let encoder = Encoder::begin_single_time(device.clone(), adapter);
+    let single_time_pool = CmdPool::new(device.clone(), &adapter);
+    let encoder = Encoder::begin_single_time(device.clone(), &single_time_pool);
 
     let mut mip_width = width as i32;
     let mut mip_height = height as i32;
@@ -600,10 +627,11 @@ fn copy_from_buffer(
         .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
         .image_extent(extent);
 
-    let encoder = Encoder::begin_single_time(device.clone(), adapter);
+    let single_time_pool = CmdPool::new(device.clone(), &adapter);
+    let encoder = Encoder::begin_single_time(device.clone(), &single_time_pool);
 
     encoder.cmd_copy_buffer_to_image(
-        buffer.vk_buffer,
+        buffer.handle,
         image,
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         &[region],

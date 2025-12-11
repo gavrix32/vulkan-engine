@@ -1,27 +1,30 @@
 use crate::context::RenderContext;
-use crate::mesh::{Mesh, Primitive};
+use crate::model::{Model, Primitive};
 use crate::parser;
 use crate::vertex::Vertex;
 use crate::vulkan::adapter::Adapter;
 use crate::vulkan::buffer::Buffer;
+use crate::vulkan::descriptor::{DescriptorPool, DescriptorWriter};
 use crate::vulkan::device::Device;
-use crate::vulkan::image::{Image, ImageBuilder, ImageView};
+use crate::vulkan::image::{Image, ImageBuilder, ImageView, Sampler};
 use crate::vulkan::instance::Instance;
 use crate::vulkan::util;
-use ash::util::Align;
 use ash::vk;
+use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocator;
 use image::ImageReader;
 use log::info;
 use std::io::Cursor;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct AssetManager {
     ctx: Arc<RenderContext>,
+    allocator: Arc<Mutex<Allocator>>,
 }
 
 impl AssetManager {
-    pub fn new(ctx: Arc<RenderContext>) -> Self {
-        Self { ctx }
+    pub fn new(ctx: Arc<RenderContext>, allocator: Arc<Mutex<Allocator>>) -> Self {
+        Self { ctx, allocator }
     }
 
     // pub fn load_texture_rgba8<S: AsRef<[u8]>>(&self, slice: S) -> (Arc<Image>, ImageView) {
@@ -65,6 +68,7 @@ impl AssetManager {
             &self.ctx.instance,
             &self.ctx.adapter,
             self.ctx.device.clone(),
+            self.allocator.clone(),
             vk::Format::R32G32B32A32_SFLOAT,
             image_reader.width(),
             image_reader.height(),
@@ -82,7 +86,7 @@ impl AssetManager {
         (image, image_view)
     }
 
-    pub fn load_gltf<S: AsRef<[u8]>>(&self, slice: S) -> Mesh {
+    pub fn load_gltf<S: AsRef<[u8]>>(&self, slice: S) -> Model {
         info!("Importing model");
         let (document, buffers_data, images_data) =
             gltf::import_slice(slice).expect("Failed to load model");
@@ -172,6 +176,8 @@ impl AssetManager {
                         &self.ctx.instance,
                         &self.ctx.adapter,
                         self.ctx.device.clone(),
+                        self.allocator.clone(),
+                        MemoryLocation::Unknown,
                     ),
             );
 
@@ -198,6 +204,7 @@ impl AssetManager {
             &self.ctx.instance,
             &self.ctx.adapter,
             self.ctx.device.clone(),
+            self.allocator.clone(),
             vk::Format::R8G8B8A8_UNORM,
             placeholder_image_reader.width(),
             placeholder_image_reader.height(),
@@ -217,37 +224,66 @@ impl AssetManager {
         info!("Textures: {}, Size: {} MB", images.len(), size_mb);
 
         let vertex_buffer = create_buffer(
-            &self.ctx.instance,
             &self.ctx.adapter,
             self.ctx.device.clone(),
+            self.allocator.clone(),
             self.ctx.device.graphics_queue,
             &vertices,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         );
 
         let index_buffer = create_buffer(
-            &self.ctx.instance,
             &self.ctx.adapter,
             self.ctx.device.clone(),
+            self.allocator.clone(),
             self.ctx.device.graphics_queue,
             &indices,
             vk::BufferUsageFlags::INDEX_BUFFER,
         );
 
-        Mesh {
+        let pool_sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(images.len() as u32)];
+
+        let descriptor_pool = DescriptorPool::new(self.ctx.device.clone(), 1, &pool_sizes);
+
+        let descriptor_set =
+            descriptor_pool.allocate(&self.ctx.res_descriptor_layout, images.len() as u32);
+
+        let sampler = Sampler::new(
+            self.ctx.device.clone(),
+            vk::Filter::LINEAR,
+            vk::Filter::LINEAR,
+            vk::LOD_CLAMP_NONE,
+        );
+
+        DescriptorWriter::default()
+            .images(
+                0,
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                &image_views,
+                &sampler,
+            )
+            .update(self.ctx.device.clone(), descriptor_set);
+
+        Model {
             vertex_buffer,
             index_buffer,
             primitives,
-            images,
-            image_views,
+            _sampler: sampler,
+            _images: images,
+            _image_views: image_views,
+            _res_descriptor_pool: descriptor_pool,
+            res_descriptor_set: descriptor_set,
         }
     }
 }
 
-fn create_buffer<T: Copy>(
-    instance: &Instance,
+fn create_buffer<T: bytemuck::NoUninit>(
     adapter: &Adapter,
     device: Arc<Device>,
+    allocator: Arc<Mutex<Allocator>>,
     graphics_queue: vk::Queue,
     data: &[T],
     usage: vk::BufferUsageFlags,
@@ -255,31 +291,21 @@ fn create_buffer<T: Copy>(
     let size = (size_of::<T>() * data.len()) as vk::DeviceSize;
 
     let mut staging_buffer = Buffer::new(
-        instance,
-        adapter,
         device.clone(),
+        allocator.clone(),
         size,
         vk::BufferUsageFlags::TRANSFER_SRC,
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        MemoryLocation::CpuToGpu,
     );
 
-    staging_buffer.map_memory();
-    let data_ptr = staging_buffer
-        .p_data
-        .expect("No data pointer in staging buffer");
-
-    let mut vertex_align = unsafe { Align::new(data_ptr, align_of::<T>() as vk::DeviceSize, size) };
-    vertex_align.copy_from_slice(&data);
-
-    staging_buffer.unmap_memory();
+    staging_buffer.update(&data);
 
     let vertex_buffer = Buffer::new(
-        instance,
-        adapter,
         device.clone(),
+        allocator.clone(),
         size,
         vk::BufferUsageFlags::TRANSFER_DST | usage,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        MemoryLocation::Unknown,
     );
 
     staging_buffer.copy(graphics_queue, adapter, &vertex_buffer);
@@ -291,6 +317,7 @@ fn create_image(
     instance: &Instance,
     adapter: &Adapter,
     device: Arc<Device>,
+    allocator: Arc<Mutex<Allocator>>,
     format: vk::Format,
     width: u32,
     height: u32,
@@ -307,6 +334,12 @@ fn create_image(
                     | vk::ImageUsageFlags::SAMPLED,
             )
             .bytes(bytes)
-            .build(&instance, &adapter, device.clone()),
+            .build(
+                &instance,
+                &adapter,
+                device.clone(),
+                allocator.clone(),
+                MemoryLocation::Unknown,
+            ),
     )
 }

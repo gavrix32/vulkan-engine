@@ -1,5 +1,5 @@
 use crate::camera::Camera;
-use crate::mesh::Mesh;
+use crate::model::Model;
 
 // TODO: Builder
 // TODO: Point Lights, Directional Lights
@@ -7,5 +7,5 @@ use crate::mesh::Mesh;
 #[derive(Default)]
 pub struct Scene {
     pub camera: Camera,
-    pub meshes: Vec<Mesh>,
+    pub models: Vec<Model>,
 }

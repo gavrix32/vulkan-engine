@@ -8,7 +8,7 @@ use std::sync::Arc;
 pub struct Pipeline {
     device: Arc<Device>,
     pub layout: vk::PipelineLayout,
-    pub vk_pipeline: vk::Pipeline,
+    pub handle: vk::Pipeline,
 }
 
 #[derive(Default, Clone)]
@@ -162,7 +162,7 @@ impl<'a> PipelineBuilder<'a> {
             let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&words);
             let module = unsafe_vk_try!(
                 device
-                    .ash_device
+                    .handle
                     .create_shader_module(&shader_module_create_info, None)
             );
 
@@ -185,7 +185,7 @@ impl<'a> PipelineBuilder<'a> {
 
         let layout = unsafe_vk_try!(
             device
-                .ash_device
+                .handle
                 .create_pipeline_layout(&self.pipeline_layout_info, None)
         );
 
@@ -208,7 +208,7 @@ impl<'a> PipelineBuilder<'a> {
             .layout(layout)
             .push_next(&mut pipeline_rendering_create_info);
 
-        let pipelines = unsafe_vk_try!(device.ash_device.create_graphics_pipelines(
+        let pipelines = unsafe_vk_try!(device.handle.create_graphics_pipelines(
             vk::PipelineCache::null(),
             &[pipeline_create_info],
             None,
@@ -216,14 +216,14 @@ impl<'a> PipelineBuilder<'a> {
 
         for stage in &shader_stages {
             unsafe {
-                device.ash_device.destroy_shader_module(stage.module, None);
+                device.handle.destroy_shader_module(stage.module, None);
             }
         }
 
         Pipeline {
             device,
             layout,
-            vk_pipeline: pipelines[0],
+            handle: pipelines[0],
         }
     }
 
@@ -238,7 +238,7 @@ impl<'a> PipelineBuilder<'a> {
         let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&words);
         let module = unsafe_vk_try!(
             device
-                .ash_device
+                .handle
                 .create_shader_module(&shader_module_create_info, None)
         );
 
@@ -249,7 +249,7 @@ impl<'a> PipelineBuilder<'a> {
 
         let layout = unsafe_vk_try!(
             device
-                .ash_device
+                .handle
                 .create_pipeline_layout(&self.pipeline_layout_info, None)
         );
 
@@ -257,7 +257,7 @@ impl<'a> PipelineBuilder<'a> {
             .stage(shader_stage)
             .layout(layout);
 
-        let pipelines = unsafe_vk_try!(device.ash_device.create_compute_pipelines(
+        let pipelines = unsafe_vk_try!(device.handle.create_compute_pipelines(
             vk::PipelineCache::null(),
             &[pipeline_create_info],
             None,
@@ -265,14 +265,14 @@ impl<'a> PipelineBuilder<'a> {
 
         unsafe {
             device
-                .ash_device
+                .handle
                 .destroy_shader_module(shader_stage.module, None);
         }
 
         Pipeline {
             device,
             layout,
-            vk_pipeline: pipelines[0],
+            handle: pipelines[0],
         }
     }
 }
@@ -280,11 +280,9 @@ impl<'a> PipelineBuilder<'a> {
 impl Drop for Pipeline {
     fn drop(&mut self) {
         unsafe {
+            self.device.handle.destroy_pipeline(self.handle, None);
             self.device
-                .ash_device
-                .destroy_pipeline(self.vk_pipeline, None);
-            self.device
-                .ash_device
+                .handle
                 .destroy_pipeline_layout(self.layout, None);
         }
     }

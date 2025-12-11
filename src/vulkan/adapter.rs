@@ -9,23 +9,23 @@ use std::ffi::CStr;
 pub const DEVICE_EXTENSIONS: [&CStr; 2] = [khr::swapchain::NAME, khr::shader_draw_parameters::NAME];
 
 pub struct Adapter {
-    pub physical_device: vk::PhysicalDevice,
+    pub handle: vk::PhysicalDevice,
     pub queue_family_indices: QueueFamilyIndices,
 }
 
 impl Adapter {
     pub fn new(instance: &Instance, surface: &Surface) -> Self {
-        let adapters = unsafe_vk_try!(instance.ash_instance.enumerate_physical_devices());
+        let adapters = unsafe_vk_try!(instance.handle.enumerate_physical_devices());
         if adapters.len() == 0 {
             panic!("Failed to find GPUs with Vulkan support");
         }
 
-        for physical_device in adapters {
+        for handle in adapters {
             let (adapter_suitable, queue_family_indices) =
-                is_physical_device_suitable(instance, physical_device, &surface);
+                is_physical_device_suitable(instance, handle, &surface);
             if adapter_suitable {
                 return Self {
-                    physical_device,
+                    handle,
                     queue_family_indices,
                 };
             }
@@ -34,11 +34,7 @@ impl Adapter {
     }
 
     pub fn max_usable_sample_count(&self, instance: &Instance) -> vk::SampleCountFlags {
-        let properties = unsafe {
-            instance
-                .ash_instance
-                .get_physical_device_properties(self.physical_device)
-        };
+        let properties = unsafe { instance.handle.get_physical_device_properties(self.handle) };
         let counts = properties.limits.framebuffer_color_sample_counts
             & properties.limits.framebuffer_depth_sample_counts;
 
@@ -92,7 +88,7 @@ fn check_physical_device_extensions_support(
 ) -> bool {
     let available_extensions = unsafe_vk_try!(
         instance
-            .ash_instance
+            .handle
             .enumerate_device_extension_properties(physical_device)
     );
 
@@ -123,7 +119,7 @@ impl QueueFamilyIndices {
 
         let queue_families = unsafe {
             instance
-                .ash_instance
+                .handle
                 .get_physical_device_queue_family_properties(physical_device)
         };
 

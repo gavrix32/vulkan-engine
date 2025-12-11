@@ -6,8 +6,10 @@ use crate::vulkan::surface::Surface;
 use crate::vulkan::sync::Semaphore;
 use crate::{unsafe_vk_try, vk_try};
 use ash::{khr, vk};
+use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocator;
 use log::warn;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct Swapchain {
     device: Arc<Device>,
@@ -29,6 +31,7 @@ impl Swapchain {
         adapter: &Adapter,
         device: Arc<Device>,
         surface: &Surface,
+        allocator: Arc<Mutex<Allocator>>,
         width: u32,
         height: u32,
         msaa_samples: vk::SampleCountFlags,
@@ -48,6 +51,7 @@ impl Swapchain {
             adapter,
             device.clone(),
             surface,
+            allocator.clone(),
             width,
             height,
             msaa_samples,
@@ -69,13 +73,13 @@ impl Swapchain {
     }
 
     pub fn get_format(adapter: &Adapter, surface: &Surface) -> vk::Format {
-        let support_details = SupportDetails::query_support(adapter.physical_device, surface);
+        let support_details = SupportDetails::query_support(adapter.handle, surface);
         choose_surface_format(support_details.formats).format
     }
 
     pub(crate) fn destroy(&self) {
         for image_view in &self.image_views {
-            unsafe { self.device.ash_device.destroy_image_view(*image_view, None) };
+            unsafe { self.device.handle.destroy_image_view(*image_view, None) };
         }
         unsafe {
             self.swapchain_device
@@ -87,6 +91,7 @@ impl Swapchain {
         &mut self,
         instance: &Instance,
         adapter: &Adapter,
+        allocator: Arc<Mutex<Allocator>>,
         surface: &Surface,
         width: u32,
         height: u32,
@@ -111,6 +116,7 @@ impl Swapchain {
             adapter,
             self.device.clone(),
             surface,
+            allocator.clone(),
             width,
             height,
             msaa_samples,
@@ -133,7 +139,7 @@ impl Swapchain {
             self.swapchain_device.acquire_next_image(
                 self.swapchain_khr,
                 u64::MAX,
-                signal_semaphore.vk_semaphore,
+                signal_semaphore.handle,
                 vk::Fence::null(),
             )
         };
@@ -163,7 +169,7 @@ impl Swapchain {
     pub fn present(&self, image_index: u32, wait_semaphore: &Semaphore) -> bool {
         let swapchains = [self.swapchain_khr];
         let image_indices = [image_index];
-        let wait_semaphores = [wait_semaphore.vk_semaphore];
+        let wait_semaphores = [wait_semaphore.handle];
 
         let present_info_khr = vk::PresentInfoKHR::default()
             .wait_semaphores(&wait_semaphores)
@@ -199,6 +205,7 @@ fn init(
     adapter: &Adapter,
     device: Arc<Device>,
     surface: &Surface,
+    allocator: Arc<Mutex<Allocator>>,
     width: u32,
     height: u32,
     msaa_samples: vk::SampleCountFlags,
@@ -213,7 +220,7 @@ fn init(
     ImageView,
     ImageView,
 ) {
-    let support_details = SupportDetails::query_support(adapter.physical_device, surface);
+    let support_details = SupportDetails::query_support(adapter.handle, surface);
 
     let surface_format = choose_surface_format(support_details.formats);
     let present_mode = choose_present_mode(support_details.present_modes);
@@ -258,7 +265,7 @@ fn init(
         create_info = create_info.image_sharing_mode(vk::SharingMode::EXCLUSIVE);
     }
 
-    let swapchain_device = khr::swapchain::Device::new(&instance.ash_instance, &device.ash_device);
+    let swapchain_device = khr::swapchain::Device::new(&instance.handle, &device.handle);
     let swapchain_khr = unsafe_vk_try!(swapchain_device.create_swapchain(&create_info, None));
     let images = unsafe_vk_try!(swapchain_device.get_swapchain_images(swapchain_khr));
     let image_views = create_image_views(&images, surface_format.format, device.clone());
@@ -271,7 +278,13 @@ fn init(
                 vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             )
             .samples(msaa_samples)
-            .build(&instance, &adapter, device.clone()),
+            .build(
+                &instance,
+                &adapter,
+                device.clone(),
+                allocator.clone(),
+                MemoryLocation::Unknown,
+            ),
     );
 
     let color_image_view = ImageView::new(
@@ -289,7 +302,13 @@ fn init(
             .format(vk::Format::D32_SFLOAT_S8_UINT)
             .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
             .samples(msaa_samples)
-            .build(&instance, &adapter, device.clone()),
+            .build(
+                &instance,
+                &adapter,
+                device.clone(),
+                allocator.clone(),
+                MemoryLocation::Unknown,
+            ),
     );
 
     let depth_image_view = ImageView::new(
@@ -344,7 +363,7 @@ fn create_image_views(
 
         let image_view = unsafe_vk_try!(
             device
-                .ash_device
+                .handle
                 .create_image_view(&image_view_create_info, None)
         );
         image_views.push(image_view)

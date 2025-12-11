@@ -1,89 +1,54 @@
 use crate::unsafe_vk_try;
-use crate::vulkan::adapter::Adapter;
 use crate::vulkan::device::Device;
+use crate::vulkan::pool::CmdPool;
 use ash::vk;
 use std::sync::Arc;
 
 pub struct Encoder {
     device: Arc<Device>,
-    pub command_pool: vk::CommandPool,
-    pub command_buffers: Vec<vk::CommandBuffer>,
-    command_buffer_index: usize,
+    pub cmd: vk::CommandBuffer,
 }
 
 impl Encoder {
-    pub fn new(device: Arc<Device>, adapter: &Adapter, max_command_buffers: usize) -> Self {
-        let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(
-                adapter
-                    .queue_family_indices
-                    .graphics_family
-                    .expect("Graphics queue family not found"),
-            );
-
-        let command_pool = unsafe_vk_try!(
-            device
-                .ash_device
-                .create_command_pool(&command_pool_create_info, None)
-        );
-
-        let command_buffers: Vec<vk::CommandBuffer> = Vec::with_capacity(max_command_buffers);
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(command_pool)
+    pub fn new(device: Arc<Device>, cmd_pool: &CmdPool) -> Self {
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(cmd_pool.handle)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(command_buffers.capacity() as u32);
+            .command_buffer_count(1);
 
-        let command_buffers = unsafe_vk_try!(
-            device
-                .ash_device
-                .allocate_command_buffers(&command_buffer_allocate_info)
-        );
+        let cmd = unsafe_vk_try!(device.handle.allocate_command_buffers(&alloc_info))[0];
 
-        Self {
-            device,
-            command_pool,
-            command_buffers,
-            command_buffer_index: 0,
-        }
+        Self { device, cmd }
     }
 
-    pub fn begin(&mut self, frame_in_flight: usize) {
-        self.command_buffer_index = frame_in_flight;
-
-        let cmd = self.command_buffers[self.command_buffer_index];
-
+    pub fn begin(&mut self) {
         unsafe_vk_try!(
             self.device
-                .ash_device
-                .begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())
+                .handle
+                .begin_command_buffer(self.cmd, &vk::CommandBufferBeginInfo::default())
         );
     }
 
     pub fn end(&self) {
-        unsafe_vk_try!(
-            self.device
-                .ash_device
-                .end_command_buffer(self.command_buffers[self.command_buffer_index])
-        );
+        unsafe_vk_try!(self.device.handle.end_command_buffer(self.cmd));
     }
 
     pub fn cmd_set_viewport(&self, first_viewport: u32, viewports: &[vk::Viewport]) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .cmd_set_viewport(cmd, first_viewport, viewports);
         }
     }
 
     pub fn cmd_set_scissor(&self, first_scissor: u32, scissors: &[vk::Rect2D]) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .cmd_set_scissor(cmd, first_scissor, scissors);
         }
     }
@@ -93,11 +58,11 @@ impl Encoder {
         pipeline_bind_point: vk::PipelineBindPoint,
         pipeline: vk::Pipeline,
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .cmd_bind_pipeline(cmd, pipeline_bind_point, pipeline);
         }
     }
@@ -108,11 +73,11 @@ impl Encoder {
         buffers: &[vk::Buffer],
         offsets: &[vk::DeviceSize],
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .cmd_bind_vertex_buffers(cmd, first_binding, buffers, offsets);
         }
     }
@@ -123,11 +88,11 @@ impl Encoder {
         offset: vk::DeviceSize,
         index_type: vk::IndexType,
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .cmd_bind_index_buffer(cmd, buffer, offset, index_type);
         }
     }
@@ -140,10 +105,10 @@ impl Encoder {
         descriptor_sets: &[vk::DescriptorSet],
         dynamic_offsets: &[u32],
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
-            self.device.ash_device.cmd_bind_descriptor_sets(
+            self.device.handle.cmd_bind_descriptor_sets(
                 cmd,
                 pipeline_bind_point,
                 layout,
@@ -161,11 +126,11 @@ impl Encoder {
         offset: u32,
         constants: &[u8],
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .cmd_push_constants(cmd, layout, stage_flags, offset, constants);
         }
     }
@@ -178,10 +143,10 @@ impl Encoder {
         vertex_offset: i32,
         first_instance: u32,
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
-            self.device.ash_device.cmd_draw_indexed(
+            self.device.handle.cmd_draw_indexed(
                 cmd,
                 index_count,
                 instance_count,
@@ -199,10 +164,10 @@ impl Encoder {
         first_vertex: u32,
         first_instance: u32,
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
-            self.device.ash_device.cmd_draw(
+            self.device.handle.cmd_draw(
                 cmd,
                 vertex_count,
                 instance_count,
@@ -213,21 +178,21 @@ impl Encoder {
     }
 
     pub fn cmd_dispatch(&self, group_count_x: u32, group_count_y: u32, group_count_z: u32) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .cmd_dispatch(cmd, group_count_x, group_count_y, group_count_z);
         }
     }
 
     pub fn cmd_pipeline_barrier2(&self, dependency_info: &vk::DependencyInfo) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .cmd_pipeline_barrier2(cmd, dependency_info);
         }
     }
@@ -238,11 +203,11 @@ impl Encoder {
         dst_buffer: vk::Buffer,
         regions: &[vk::BufferCopy],
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .cmd_copy_buffer(cmd, src_buffer, dst_buffer, regions);
         }
     }
@@ -254,10 +219,10 @@ impl Encoder {
         dst_image_layout: vk::ImageLayout,
         regions: &[vk::BufferImageCopy],
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
-            self.device.ash_device.cmd_copy_buffer_to_image(
+            self.device.handle.cmd_copy_buffer_to_image(
                 cmd,
                 src_buffer,
                 dst_image,
@@ -276,10 +241,10 @@ impl Encoder {
         regions: &[vk::ImageBlit],
         filter: vk::Filter,
     ) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
-            self.device.ash_device.cmd_blit_image(
+            self.device.handle.cmd_blit_image(
                 cmd,
                 src_image,
                 src_image_layout,
@@ -292,98 +257,53 @@ impl Encoder {
     }
 
     pub fn cmd_begin_rendering(&self, rendering_info: &vk::RenderingInfo) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
-            self.device
-                .ash_device
-                .cmd_begin_rendering(cmd, rendering_info);
+            self.device.handle.cmd_begin_rendering(cmd, rendering_info);
         }
     }
 
     pub fn cmd_end_rendering(&self) {
-        let cmd = self.command_buffers[self.command_buffer_index];
+        let cmd = self.cmd;
 
         unsafe {
-            self.device.ash_device.cmd_end_rendering(cmd);
+            self.device.handle.cmd_end_rendering(cmd);
         }
     }
 
-    pub fn begin_single_time(device: Arc<Device>, adapter: &Adapter) -> Self {
-        let command_buffer_index = 0;
-
-        let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-            .queue_family_index(
-                adapter
-                    .queue_family_indices
-                    .graphics_family
-                    .expect("Graphics queue family not found"),
-            );
-
-        let command_pool = unsafe_vk_try!(
-            device
-                .ash_device
-                .create_command_pool(&command_pool_create_info, None)
-        );
-
-        let command_buffers: Vec<vk::CommandBuffer> = Vec::with_capacity(1);
-        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-            .command_pool(command_pool)
+    pub fn begin_single_time(device: Arc<Device>, pool: &CmdPool) -> Self {
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(pool.handle)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(command_buffers.capacity() as u32);
+            .command_buffer_count(1);
 
-        let command_buffers = unsafe_vk_try!(
-            device
-                .ash_device
-                .allocate_command_buffers(&command_buffer_allocate_info)
-        );
+        let cmd = unsafe_vk_try!(device.handle.allocate_command_buffers(&alloc_info))[0];
 
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
+        let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-        unsafe_vk_try!(device.ash_device.begin_command_buffer(
-            command_buffers[command_buffer_index],
-            &command_buffer_begin_info
-        ));
+        unsafe_vk_try!(device.handle.begin_command_buffer(cmd, &begin_info));
 
         Self {
             device: device.clone(),
-            command_pool,
-            command_buffers,
-            command_buffer_index,
+            cmd,
         }
     }
 
     pub fn end_single_time(&self, queue: vk::Queue) {
+        unsafe_vk_try!(self.device.handle.end_command_buffer(self.cmd));
+
+        let cmds = [self.cmd];
+
+        let submit_info = vk::SubmitInfo::default().command_buffers(&cmds);
+
         unsafe_vk_try!(
             self.device
-                .ash_device
-                .end_command_buffer(self.command_buffers[self.command_buffer_index])
+                .handle
+                .queue_submit(queue, &[submit_info], vk::Fence::null())
         );
 
-        let submit_info = vk::SubmitInfo::default().command_buffers(&self.command_buffers);
-
-        unsafe_vk_try!(self.device.ash_device.queue_submit(
-            queue,
-            &[submit_info],
-            vk::Fence::null()
-        ));
-
-        unsafe_vk_try!(self.device.ash_device.queue_wait_idle(queue));
-    }
-}
-
-impl Drop for Encoder {
-    fn drop(&mut self) {
-        unsafe {
-            self.device
-                .ash_device
-                .free_command_buffers(self.command_pool, &self.command_buffers);
-
-            self.device
-                .ash_device
-                .destroy_command_pool(self.command_pool, None);
-        }
+        unsafe_vk_try!(self.device.handle.queue_wait_idle(queue));
     }
 }

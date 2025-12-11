@@ -1,6 +1,8 @@
+use crate::context::RenderContext;
 use crate::input::Input;
 use crate::renderer::Renderer;
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use crate::scene::Scene;
+use std::sync::Arc;
 use std::time::Duration;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -11,11 +13,13 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 pub struct State {
     title: String,
-    width: u32,
-    height: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
     pub status: PumpStatus,
-    window: Option<Window>,
+    pub window: Option<Window>,
     pub renderer: Option<Renderer>,
+    pub scene: Scene,
+    pub ctx: Option<Arc<RenderContext>>,
     pub input: Input,
 }
 
@@ -27,7 +31,9 @@ impl State {
             height,
             status: PumpStatus::Continue,
             window: None,
+            ctx: None,
             renderer: None,
+            scene: Scene::default(),
             input: Input::default(),
         }
     }
@@ -49,6 +55,10 @@ impl State {
 
 impl ApplicationHandler for State {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+
         let window_attribs = WindowAttributes::default()
             .with_title(self.title.as_str())
             .with_inner_size(PhysicalSize::new(self.width, self.height));
@@ -57,33 +67,7 @@ impl ApplicationHandler for State {
             .create_window(window_attribs)
             .expect("Failed to create window");
 
-        let args: Vec<String> = std::env::args().collect();
-
-        if args.iter().any(|a| a == "-h" || a == "--help") {
-            println!("Usage: vulkan-engine [OPTIONS]");
-            println!("    -h --help          display this help and exit");
-            println!("    -v --validation    use vulkan validation layers");
-            std::process::exit(0);
-        }
-
-        let validation = args.iter().any(|a| a == "-v" || a == "--validation");
-
-        let renderer = Renderer::new(
-            self.width,
-            self.height,
-            window
-                .display_handle()
-                .expect("Failed to get display handle")
-                .as_raw(),
-            window
-                .window_handle()
-                .expect("Failed to get window handle")
-                .as_raw(),
-            validation,
-        );
-
         self.window = Some(window);
-        self.renderer = Some(renderer);
     }
 
     fn window_event(
@@ -96,7 +80,7 @@ impl ApplicationHandler for State {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.draw_frame();
+                    renderer.draw_frame(&self.scene);
                 }
             }
             WindowEvent::Resized(resolution) => {

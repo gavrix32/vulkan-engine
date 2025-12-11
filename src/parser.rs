@@ -1,4 +1,4 @@
-use crate::mesh::Primitive;
+use crate::model::Primitive;
 use crate::vertex::Vertex;
 use glam::Mat4;
 use gltf::{Node, buffer};

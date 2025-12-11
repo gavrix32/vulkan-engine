@@ -1,7 +1,9 @@
 use ash::vk;
+use bytemuck::{Pod, Zeroable};
 use std::mem::offset_of;
 
-#[derive(Copy, Clone)]
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],

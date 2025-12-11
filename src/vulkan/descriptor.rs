@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 pub struct DescriptorSetLayout {
     device: Arc<Device>,
-    pub vk_layout: vk::DescriptorSetLayout,
+    pub handle: vk::DescriptorSetLayout,
 }
 
 impl DescriptorSetLayout {
@@ -21,8 +21,8 @@ impl Drop for DescriptorSetLayout {
     fn drop(&mut self) {
         unsafe {
             self.device
-                .ash_device
-                .destroy_descriptor_set_layout(self.vk_layout, None);
+                .handle
+                .destroy_descriptor_set_layout(self.handle, None);
         }
     }
 }
@@ -72,13 +72,13 @@ impl DescriptorSetLayoutBuilder {
 
         let vk_layout = unsafe_vk_try!(
             self.device
-                .ash_device
+                .handle
                 .create_descriptor_set_layout(&layout_info, None)
         );
 
         DescriptorSetLayout {
             device: self.device,
-            vk_layout,
+            handle: vk_layout,
         }
     }
 }
@@ -93,7 +93,7 @@ pub struct DescriptorWriter<'a> {
 impl<'a> DescriptorWriter<'a> {
     pub fn buffer(mut self, binding: u32, ty: vk::DescriptorType, buffer: &'a Buffer) -> Self {
         let buffer_info = vk::DescriptorBufferInfo::default()
-            .buffer(buffer.vk_buffer)
+            .buffer(buffer.handle)
             .offset(0)
             .range(vk::WHOLE_SIZE);
         self.buffer_infos.push(buffer_info);
@@ -184,7 +184,7 @@ impl<'a> DescriptorWriter<'a> {
         }
 
         unsafe {
-            device.ash_device.update_descriptor_sets(&self.writes, &[]);
+            device.handle.update_descriptor_sets(&self.writes, &[]);
         }
     }
 }
@@ -203,7 +203,7 @@ impl DescriptorPool {
 
         let vk_pool = unsafe_vk_try!(
             device
-                .ash_device
+                .handle
                 .create_descriptor_pool(&pool_create_info, None)
         );
 
@@ -211,7 +211,7 @@ impl DescriptorPool {
     }
 
     pub fn allocate(&self, layout: &DescriptorSetLayout, variable_count: u32) -> vk::DescriptorSet {
-        let layouts = [layout.vk_layout];
+        let layouts = [layout.handle];
 
         let variable_counts = [variable_count];
 
@@ -224,11 +224,7 @@ impl DescriptorPool {
             .set_layouts(&layouts)
             .push_next(&mut variable_count_alloc_info);
 
-        let sets = unsafe_vk_try!(
-            self.device
-                .ash_device
-                .allocate_descriptor_sets(&allocate_info)
-        );
+        let sets = unsafe_vk_try!(self.device.handle.allocate_descriptor_sets(&allocate_info));
 
         sets[0]
     }
@@ -238,7 +234,7 @@ impl Drop for DescriptorPool {
     fn drop(&mut self) {
         unsafe {
             self.device
-                .ash_device
+                .handle
                 .destroy_descriptor_pool(self.vk_pool, None);
         }
     }

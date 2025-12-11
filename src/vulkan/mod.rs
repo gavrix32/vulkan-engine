@@ -7,6 +7,7 @@ pub mod encoder;
 pub mod image;
 pub mod instance;
 pub mod pipeline;
+pub mod pool;
 pub mod surface;
 pub mod swapchain;
 pub mod sync;

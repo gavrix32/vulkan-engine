@@ -6,7 +6,7 @@ use std::ffi::{CStr, c_char};
 
 pub struct Instance {
     pub entry: ash::Entry,
-    pub ash_instance: ash::Instance,
+    pub handle: ash::Instance,
 
     debug_instance: Option<ext::debug_utils::Instance>,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
@@ -42,18 +42,18 @@ impl Instance {
                 .push_next(&mut debug_utils_messenger_create_info);
         }
 
-        let ash_instance = unsafe_vk_try!(entry.create_instance(&debug_instance_create_info, None));
+        let handle = unsafe_vk_try!(entry.create_instance(&debug_instance_create_info, None));
 
         let (debug_instance, debug_messenger) = debug::setup_debug_messenger(
             &entry,
-            &ash_instance,
+            &handle,
             &debug_utils_messenger_create_info,
             validation,
         );
 
         Self {
             entry,
-            ash_instance,
+            handle,
             debug_instance,
             debug_messenger,
         }
@@ -101,7 +101,7 @@ impl Drop for Instance {
             {
                 instance.destroy_debug_utils_messenger(messenger, None);
             }
-            self.ash_instance.destroy_instance(None)
+            self.handle.destroy_instance(None)
         }
     }
 }

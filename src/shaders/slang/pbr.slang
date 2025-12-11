@@ -11,19 +11,19 @@ struct UniformBuffer {
 [vk::binding(0, 0)]
 ConstantBuffer<UniformBuffer> uniforms;
 
-[vk::binding(1, 0)]
+[vk::binding(0, 1)]
 SamplerCube cubemap_texture;
 
-[vk::binding(2, 0)]
+[vk::binding(1, 1)]
 SamplerCube irradiance_texture;
 
-[vk::binding(3, 0)]
+[vk::binding(2, 1)]
 SamplerCube prefilter_texture;
 
-[vk::binding(4, 0)]
+[vk::binding(3, 1)]
 Sampler2D lut_texture;
 
-[vk::binding(5, 0)]
+[vk::binding(0, 2)]
 Sampler2D textures[];
 
 struct VertexInput {

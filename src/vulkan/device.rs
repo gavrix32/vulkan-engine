@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::ffi::c_char;
 
 pub struct Device {
-    pub ash_device: ash::Device,
+    pub handle: ash::Device,
     pub graphics_queue: vk::Queue,
     pub present_queue: vk::Queue,
 }
@@ -61,14 +61,14 @@ impl Device {
             .enabled_extension_names(&*adapter_extension_name_pointers)
             .push_next(&mut vulkan13_features);
 
-        let ash_device = unsafe_vk_try!(instance.ash_instance.create_device(
-            adapter.physical_device,
+        let handle = unsafe_vk_try!(instance.handle.create_device(
+            adapter.handle,
             &device_create_info,
             None
         ));
 
         let graphics_queue = unsafe {
-            ash_device.get_device_queue(
+            handle.get_device_queue(
                 adapter
                     .queue_family_indices
                     .graphics_family
@@ -77,7 +77,7 @@ impl Device {
             )
         };
         let present_queue = unsafe {
-            ash_device.get_device_queue(
+            handle.get_device_queue(
                 adapter
                     .queue_family_indices
                     .present_family
@@ -87,14 +87,32 @@ impl Device {
         };
 
         Self {
-            ash_device,
+            handle,
             graphics_queue,
             present_queue,
         }
     }
 
     pub fn wait_idle(&self) {
-        unsafe_vk_try!(self.ash_device.device_wait_idle());
+        unsafe_vk_try!(self.handle.device_wait_idle());
+    }
+
+    pub fn wait_for_fence(&self, fence: &Fence) {
+        unsafe_vk_try!(
+            self.handle
+                .wait_for_fences(&[fence.handle], true, u64::MAX,)
+        );
+    }
+
+    pub fn reset_fence(&self, fence: &Fence) {
+        unsafe_vk_try!(self.handle.reset_fences(&[fence.handle]));
+    }
+
+    pub fn reset_command_buffer(&self, cmd: vk::CommandBuffer) {
+        unsafe_vk_try!(
+            self.handle
+                .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+        );
     }
 
     pub fn submit_graphics(
@@ -104,8 +122,8 @@ impl Device {
         signal_semaphore: &Semaphore,
         fence: &Fence,
     ) {
-        let wait_semaphores = [wait_semaphore.vk_semaphore];
-        let signal_semaphores = [signal_semaphore.vk_semaphore];
+        let wait_semaphores = [wait_semaphore.handle];
+        let signal_semaphores = [signal_semaphore.handle];
         let cmd_buffers = [cmd_buffer];
 
         let submit_info = vk::SubmitInfo::default()
@@ -115,18 +133,17 @@ impl Device {
             .signal_semaphores(&signal_semaphores);
         let submit_infos = [submit_info];
 
-        unsafe_vk_try!(self.ash_device.queue_submit(
-            self.graphics_queue,
-            &submit_infos,
-            fence.vk_fence,
-        ));
+        unsafe_vk_try!(
+            self.handle
+                .queue_submit(self.graphics_queue, &submit_infos, fence.handle,)
+        );
     }
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
         unsafe {
-            self.ash_device.destroy_device(None);
+            self.handle.destroy_device(None);
         }
     }
 }

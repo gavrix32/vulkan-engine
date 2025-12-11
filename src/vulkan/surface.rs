@@ -14,10 +14,10 @@ impl Surface {
         display_handle: RawDisplayHandle,
         window_handle: RawWindowHandle,
     ) -> Self {
-        let surface_instance = khr::surface::Instance::new(&instance.entry, &instance.ash_instance);
+        let surface_instance = khr::surface::Instance::new(&instance.entry, &instance.handle);
         let surface_khr = unsafe_vk_try!(ash_window::create_surface(
             &instance.entry,
-            &instance.ash_instance,
+            &instance.handle,
             display_handle,
             window_handle,
             None,

@@ -11,7 +11,7 @@ struct UniformBuffer {
 [vk::binding(0, 0)]
 ConstantBuffer<UniformBuffer> uniforms;
 
-[vk::binding(1, 0)]
+[vk::binding(0, 1)]
 SamplerCube cubemap_texture;
 
 struct VertexOutput {
