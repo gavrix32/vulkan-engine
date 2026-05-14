@@ -117,7 +117,7 @@ fn main() {
             }
         }
 
-        let sensitivity = 0.01;
+        let sensitivity = 0.008;
 
         if state.input.pressed_buttons.contains(&MouseButton::Left) {
             camera.set_euler_rot(

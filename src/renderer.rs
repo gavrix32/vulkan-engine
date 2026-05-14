@@ -20,10 +20,15 @@ use std::time::Instant;
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 const MAX_MIP_LEVELS: u32 = 5;
 
+// TODO: Smooth camera
+// TODO: Shadows
+// TODO: Deferred shading
+// TODO: GPU driven rendering
+// TODO: if thread >= size { return } in shaders
+// TODO: fps_counter -> frame_mgr
 // TODO: Uniform descriptor set
 // TODO: loading scene in main.rs and separate descriptor sets (IBL and Meshes)
 // TODO: Normal map UNORM -> SNORM + remove * 2.0 - 1.0 in shader
-// TODO: Albedo SRGB?
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
